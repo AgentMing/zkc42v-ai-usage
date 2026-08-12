@@ -225,7 +225,9 @@ def _fetch_codex_app_server(timeout: float = 25.0) -> Optional[QuotaRecord]:
     refresh, account selection and backend compatibility.
     """
     if os.name == "nt":
-        cmd = ["wsl", "-e", "sh", "-lc", "codex app-server --listen stdio://"]
+        # Use native Codex on Windows. WSL may have no route to chatgpt.com
+        # even while the Windows host is online, causing every RPC to time out.
+        cmd = ["cmd", "/d", "/c", "codex.cmd", "app-server", "--listen", "stdio://"]
     else:
         cmd = ["codex", "app-server", "--listen", "stdio://"]
     try:
@@ -668,9 +670,16 @@ def fetch_codex(cred: Credential, http: HttpFn = _default_http) -> QuotaRecord:
     # installed first-party Codex app-server. Injected HTTP functions in tests
     # intentionally retain the direct path below.
     if http is _default_http:
-        official = _fetch_codex_app_server()
-        if official is not None:
-            return official
+        # Never fall back to the private chatgpt.com web endpoint in normal
+        # operation. Cloudflare frequently rejects that endpoint with 403,
+        # while the first-party app-server owns token refresh and compatibility.
+        for attempt in range(2):
+            official = _fetch_codex_app_server(timeout=35.0)
+            if official is not None:
+                return official
+            if attempt == 0:
+                time.sleep(1.0)
+        return error("codex", "official app-server unavailable after retry")
     headers = {
         "Authorization": f"Bearer {cred.access_token}",
         "Accept": "application/json",
