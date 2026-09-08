@@ -1,0 +1,1253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ZKC42V 布局设计器</title>
+<style>
+  :root {
+    --bg: #f4f6f8;
+    --panel: #ffffff;
+    --border: #d9dee5;
+    --ink: #1a1d21;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-soft: #eff6ff;
+    --danger: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 { font-size: 16px; margin: 0; }
+  header .sub { font-size: 12px; color: var(--muted); }
+  .spacer { flex: 1; }
+  button {
+    font: inherit;
+    font-size: 13px;
+    border: 1px solid var(--border);
+    background: var(--panel);
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--ink);
+  }
+  button:hover { background: var(--accent-soft); border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primary:hover { background: #1d4ed8; }
+  button.danger { color: var(--danger); border-color: #fecaca; }
+  button.danger:hover { background: #fef2f2; }
+  main {
+    display: grid;
+    grid-template-columns: minmax(420px, 1fr) 320px;
+    gap: 16px;
+    padding: 16px 20px;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .stage-wrap {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .stage {
+    position: relative;
+    width: 800px;
+    max-width: 100%;
+    aspect-ratio: 4 / 3;
+    margin: 0 auto;
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow: 0 4px 20px rgba(0,0,0,.08);
+  }
+  canvas.preview {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+  }
+  .block {
+    position: absolute;
+    border: 1px dashed rgba(37,99,235,.5);
+    background: rgba(37,99,235,.06);
+    cursor: move;
+    touch-action: none;
+  }
+  .block:hover { background: rgba(37,99,235,.12); }
+  .block.selected {
+    border: 1px solid var(--accent);
+    background: rgba(37,99,235,.15);
+    z-index: 5;
+  }
+  .block .label {
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    font-size: 10px;
+    background: var(--accent);
+    color: #fff;
+    padding: 1px 6px;
+    border-radius: 3px 0 3px 0;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .block .handle {
+    position: absolute;
+    right: -1px;
+    bottom: -1px;
+    width: 14px;
+    height: 14px;
+    background: var(--accent);
+    border-radius: 3px;
+    cursor: nwse-resize;
+    display: none;
+  }
+  .block.selected .handle { display: block; }
+  .stage-note {
+    font-size: 12px;
+    color: var(--muted);
+    text-align: center;
+    margin-top: 10px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    align-self: start;
+  }
+  .panel h2 { font-size: 14px; margin: 0 0 12px; }
+  .panel h3 { font-size: 12px; color: var(--muted); margin: 16px 0 8px; text-transform: uppercase; letter-spacing: .05em; }
+  .blocks-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .block-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .block-item:hover { background: var(--accent-soft); }
+  .block-item.active { border-color: var(--accent); background: var(--accent-soft); }
+  .block-item .badge {
+    font-size: 10px;
+    background: var(--border);
+    color: var(--muted);
+    padding: 1px 6px;
+    border-radius: 10px;
+  }
+  .block-item .eye { margin-left: auto; cursor: pointer; color: var(--muted); user-select: none; }
+  .props { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .props .full { grid-column: 1 / -1; }
+  .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+  .field .cur { float: right; font-weight: 600; color: var(--ink); }
+  .field input[type="text"], .field select {
+    width: 100%;
+    font: inherit;
+    font-size: 13px;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .field input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .field input[type="checkbox"] { width: auto; }
+  .field.check { display: flex; align-items: center; gap: 6px; }
+  .field.check label { margin: 0; }
+  .props .subgroup {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+    background: rgba(255, 255, 255, 0.5);
+  }
+  .props .subgroup > b { display: block; font-size: 11px; color: var(--accent); margin-bottom: 6px; letter-spacing: 0.5px; }
+  .row-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .toolbar-row { display: flex; gap: 8px; align-items: center; }
+  .divider { width: 100%; border-top: 1px solid var(--border); margin: 14px 0; }
+  .hint { font-size: 11px; color: var(--muted); line-height: 1.6; }
+  dialog {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    width: 520px;
+    max-width: 92vw;
+  }
+  dialog::backdrop { background: rgba(0,0,0,.35); }
+  dialog textarea {
+    width: 100%;
+    height: 240px;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+  }
+  dialog .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>ZKC42V 布局设计器</h1>
+  <span class="sub">400×300 三色 BWR 价签 · 拖拽排版 · 导出 JSON 后本地渲染</span>
+  <div class="spacer"></div>
+  <div class="toolbar-row">
+    <button onclick="openExport()">导出 JSON</button>
+    <button onclick="openImport()">导入 JSON</button>
+    <button onclick="resetLayout()">重置默认</button>
+    <button class="primary" onclick="copyToClipboard()">复制配置</button>
+  </div>
+</header>
+
+<main>
+  <section class="stage-wrap">
+    <div class="stage" id="stage">
+      <canvas class="preview" id="preview" width="800" height="600"></canvas>
+      <div id="blocks"></div>
+    </div>
+    <p class="stage-note">点击块选中 · 拖动移动 · 右下角手柄缩放 · 侧栏改字体/尺寸/开关</p>
+  </section>
+
+  <aside class="panel">
+    <h2>布局结构</h2>
+    <div class="blocks-list" id="blocksList"></div>
+    <div class="toolbar-row">
+      <button onclick="addBlock('header')">+ 标题</button>
+      <button onclick="addBlock('row')">+ 额度行</button>
+      <button onclick="addBlock('quote')">+ 道德经</button>
+    </div>
+
+    <h3>块属性</h3>
+    <div id="props" class="props">
+      <p class="hint full">请选择一个块以编辑其位置、尺寸、字体与开关。</p>
+    </div>
+
+    <div class="divider"></div>
+    <div class="hint">
+      <b>用法</b>：设计好后「导出 JSON」，保存为
+      <code>data/layout.json</code>，再以
+      <code>--layout data/layout.json</code> 运行
+      <code>python -m quotas --layout data/layout.json --send</code>，
+      或把该路径交给定时任务。缺省不传 <code>--layout</code> 时用内置排版。
+    </div>
+  </aside>
+</main>
+
+<dialog id="jsonDialog">
+  <h2 style="margin:0 0 10px; font-size:14px">布局 JSON</h2>
+  <textarea id="jsonText" spellcheck="false"></textarea>
+  <div class="btn-row">
+    <button onclick="downloadJson()">下载为文件</button>
+    <button class="primary" onclick="applyJson()">应用此 JSON</button>
+    <button onclick="closeJson()">关闭</button>
+  </div>
+</dialog>
+
+<script>
+"use strict";
+const W = 400, H = 300;
+const SCALE = 2;
+const BLACK = [0, 0, 0], WHITE = [255, 255, 255], RED = [255, 0, 0];
+
+// ---- 与 tools/quotas/models.py SERVICE_NAMES 对齐 ----
+const SERVICES = ["codex", "grok", "kimi", "opencode-go", "ollama-pro", "windsurf"];
+const SERVICE_LABEL = { codex: "codex", grok: "grok", kimi: "kimi", "opencode-go": "opencode", "ollama-pro": "ollama pro", windsurf: "windsurf" };
+
+// ---- 预览用示例额度数据（对应 tests/test_quotas_layout.py sample_records）----
+const SAMPLE_RECORDS = [
+  {
+    name: "codex", status: "ok", used_percent: 42, remaining_percent: 58,
+    detail: "official app-server · plus", reset_at: "2026-08-16T12:00:00+00:00",
+    windows: [
+      { label: "5h", used_percent: 10, remaining_percent: 90, delta_percent: -1.2, reset_at: "2026-08-09T08:00:00+00:00", window_seconds: 18000 },
+      { label: "week", used_percent: 42, remaining_percent: 58, delta_percent: -0.4, reset_at: "2026-08-16T12:00:00+00:00", window_seconds: 604800 },
+    ],
+  },
+  {
+    name: "grok", status: "ok", used_percent: 80, remaining_percent: 20,
+    detail: "weekly", reset_at: "2026-08-09T02:33:59+00:00",
+    windows: [
+      { label: "week", used_percent: 80, remaining_percent: 20, delta_percent: -2.0, reset_at: "2026-08-09T02:33:59+00:00", window_seconds: 604800 },
+    ],
+  },
+  {
+    name: "kimi", status: "unavailable", detail: "no KIMI_API_KEY",
+  },
+  {
+    name: "opencode-go", status: "ok", used_percent: 12.5, remaining_percent: 87.5,
+    detail: "go plan", reset_at: "2026-08-09T07:00:00+00:00",
+    windows: [
+      { label: "5h", used_percent: 12.5, remaining_percent: 87.5, delta_percent: 0.8, reset_at: "2026-08-09T07:00:00+00:00", window_seconds: 18000 },
+      { label: "week", used_percent: 40, remaining_percent: 60, delta_percent: -1.5, reset_at: "2026-08-10T00:00:00+00:00", window_seconds: 604800 },
+    ],
+  },
+  {
+    name: "ollama-pro", status: "ok", used_percent: 18, remaining_percent: 82,
+    detail: "pro · cloud",
+    windows: [
+      { label: "5h", used_percent: 18, remaining_percent: 82, delta_percent: -3.0, window_seconds: 18000 },
+      { label: "week", used_percent: 9, remaining_percent: 91, delta_percent: 0.5, window_seconds: 604800 },
+    ],
+  },
+  {
+    name: "windsurf", status: "ok", used_percent: 24, remaining_percent: 76,
+    detail: "Pro · extra=$964.22",
+    windows: [
+      { label: "day", display_label: "day", used_percent: 24, remaining_percent: 76, delta_percent: -1.0, reset_at: "2026-08-09T16:00:00+00:00", window_seconds: 86400 },
+      { label: "week", used_percent: 38, remaining_percent: 62, delta_percent: -2.5, reset_at: "2026-08-13T16:00:00+00:00", window_seconds: 604800 },
+    ],
+  },
+];
+
+// 今日总用量示例：数值为已用百分比，真实数据由 quotas CLI 每次刷新采样。
+const SAMPLE_HISTORY = {
+  codex: { total: [35, 36, 38, 37, 40, 42] },
+  grok: { total: [72, 74, 75, 77, 79, 80] },
+  "opencode-go": { total: [8, 9, 10, 11, 12, 12.5] },
+  "ollama-pro": { total: [10, 11, 12, 14, 16, 18] },
+  windsurf: { total: [15, 17, 19, 20, 22, 24] },
+};
+const SAMPLE_MARKET = {
+  items: [
+    { key: "sh", label: "沪", change_percent: 0.65 },
+    { key: "sz", label: "深", change_percent: 0.81 },
+    { key: "spx", label: "标普", change_percent: -0.02 },
+    { key: "ndx", label: "纳", change_percent: -0.08 },
+  ],
+};
+
+// ---- 预览用道德经示例 ----
+const SAMPLE_QUOTES = [
+  { q: "上善若水。水善利万物而不争", e: "最高的善就像水，滋润万物却不与万物相争" },
+  { q: "知人者智，自知者明", e: "能看清别人是智慧，能认清自己才是真正的明白" },
+  { q: "千里之行，始于足下", e: "再远的路，也是从脚下的第一步开始" },
+  { q: "天网恢恢，疏而不失", e: "天道之网广大无边，稀疏却不会漏失" },
+  { q: "大音希声，大象无形", e: "最大的声音反而听不见，最大的形象反而看不见" },
+];
+
+// 行内子元素默认值（对应 layout.py _row_element_defaults）
+const ROW_ELEMENT_DEFAULTS = {
+  logo: { show: true, x: 9, cy: 0.5, size: 11 },
+  name: { show: true, x: 22, y: 4, font: 12, color: "auto" },
+  subtitle: { show: false, x: 29, y: 22, font: 8, color: "black" },
+  status: { show: true, x: 101, y: 2, font: 12 },
+  status_msg: { show: true, x: 101, y: 21, font: 9 },
+  hero: { show: false, right: 12, y: -2, font: 26 },
+  chart: { show: true, label: "总用量", label_x: 282, label_y: 0, label_font: 9, x: 282, y: 13, w: 110, h: 19 },
+  col1: { show: true, x: 95, tag_y: 0, tag_font: 10, balance_dx: 13, balance_y: 0, balance_font: 20, delta_dx: 3, delta_y: 5, delta_font: 8, detail_y: 28, detail_font: 9 },
+  col2: { show: true, x: 195, tag_y: 0, tag_font: 10, balance_dx: 13, balance_y: 0, balance_font: 20, delta_dx: 3, delta_y: 5, delta_font: 8, detail_y: 28, detail_font: 9 },
+};
+function rowElements(b) {
+  const merged = {};
+  for (const k of Object.keys(ROW_ELEMENT_DEFAULTS)) {
+    merged[k] = { ...ROW_ELEMENT_DEFAULTS[k], ...((b.elements && b.elements[k]) || {}) };
+  }
+  return merged;
+}
+function elColor(cfg, alert) {
+  const c = cfg.color || "auto";
+  if (c === "red") return RED;
+  if (c === "black") return BLACK;
+  return alert ? RED : BLACK;
+}
+
+// ---- 默认布局（对应 layout.py DEFAULT_LAYOUT）----
+function rowBlock(id, service, y) {
+  return {
+    id, type: "row", service, x: 0, y, w: W, h: 35, border: true,
+    elements: JSON.parse(JSON.stringify(ROW_ELEMENT_DEFAULTS)),
+  };
+}
+function defaultLayout() {
+  return {
+    version: 1,
+    canvas: { w: W, h: H },
+    blocks: [
+      { id: "header", type: "header", x: 0, y: 0, w: W, h: 27, title: "AI Quotas", title_font: 13, time_font: 14, cjk_font: 9, market_font: 9, show_title: false, show_time: true, show_calendar: true, calendar_y: 3, border: true },
+      rowBlock("row-codex", "codex", 27),
+      rowBlock("row-grok", "grok", 62),
+      rowBlock("row-kimi", "kimi", 97),
+      rowBlock("row-opencode-go", "opencode-go", 132),
+      rowBlock("row-ollama-pro", "ollama-pro", 167),
+      rowBlock("row-windsurf", "windsurf", 202),
+      { id: "quote", type: "quote", x: 0, y: 242, w: W, h: 58, quote_font: 19, explain_font: 12, border: true },
+    ],
+  };
+}
+
+let layout = defaultLayout();
+let selectedId = null;
+let drag = null;
+
+// ---- 工具函数 ----
+const uid = () => "b" + Math.random().toString(36).slice(2, 8);
+
+function getBlock(id) { return layout.blocks.find(b => b.id === id); }
+
+function beijingNow() {
+  // 北京时间 = UTC + 8
+  const d = new Date();
+  return new Date(d.getTime() + 8 * 3600 * 1000);
+}
+function fmtBJ(d) {
+  const p = n => String(n).padStart(2, "0");
+  return `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}`;
+}
+function chinaCalendarLine() {
+  // 预览占位：真实农历/节气由本地 layout.py 用 lunar_python 计算
+  return "丙午年 · 立秋 · 六月廿七";
+}
+
+function classifyWindowKind(w) {
+  const label = String(w.label || "").toLowerCase();
+  const secs = w.window_seconds;
+  if (secs != null) {
+    const s = Number(secs);
+    if (s >= 3600 && s <= 8 * 3600) return "5h";
+    if (s >= 5 * 86400) return "week";
+  }
+  if (/(rolling|5h|5-hour|five hour|secondary)/.test(label)) return "5h";
+  if (/(daily|day|24h)/.test(label)) return "5h";
+  if (/(weekly|week|primary)/.test(label)) {
+    if (/primary/.test(label) && secs != null && Number(secs) < 5 * 86400) return "5h";
+    return "week";
+  }
+  return null;
+}
+function pickDisplayWindows(rec) {
+  const byKind = {};
+  for (const w of (rec.windows || [])) {
+    if (!w || typeof w !== "object") continue;
+    const k = classifyWindowKind(w);
+    if (k && !(k in byKind)) byKind[k] = { ...w, kind: k };
+  }
+  if (!("week" in byKind) && (rec.used_percent != null || rec.remaining_percent != null)) {
+    if (Object.keys(byKind).length === 0 || "5h" in byKind) {
+      byKind.week = { kind: "week", label: "week", used_percent: rec.used_percent, remaining_percent: rec.remaining_percent, delta_percent: rec.delta_percent, reset_at: rec.reset_at };
+    }
+  }
+  if (Object.keys(byKind).length === 0 && rec.windows && rec.windows[0]) {
+    byKind.week = { ...rec.windows[0], kind: "week" };
+  }
+  const out = [];
+  for (const kind of ["5h", "week"]) {
+    out.push(kind in byKind ? { ...byKind[kind], kind } : { kind, missing: true });
+  }
+  return out;
+}
+function winRemainingPercent(w) {
+  if (w.remaining_percent != null) return Number(w.remaining_percent);
+  if (w.used_percent != null) return Math.max(0, 100 - Number(w.used_percent));
+  const rem = w.remaining, lim = w.limit;
+  if (rem != null && lim != null && Number(lim) > 0) {
+    return Math.max(0, Math.min(100, Number(rem) / Number(lim) * 100));
+  }
+  return null;
+}
+function balanceParts(w) {
+  if (w.missing) return [{ text: "—", color: "black" }];
+  const r = winRemainingPercent(w);
+  if (r != null) return [{ text: `${Math.round(r)}%`, color: "red" }];
+  return [{ text: "—", color: "black" }];
+}
+function deltaValue(w) {
+  if (w.delta_percent == null) return null;
+  const value = Number(w.delta_percent);
+  if (!Number.isFinite(value)) return null;
+  return Math.abs(value) < 0.05 ? 0 : value;
+}
+function deltaText(w) {
+  const value = deltaValue(w);
+  if (value == null) return null;
+  return `Δ${value > 0 ? "+" : ""}${value.toFixed(1)}`;
+}
+function historyValues(history, kind) {
+  if (!history || typeof history !== "object") return [];
+  let raw = history[kind];
+  if (kind === "total" && !Array.isArray(raw)) raw = history.week || history["5h"];
+  if (!Array.isArray(raw)) return [];
+  return raw.map(Number).filter(Number.isFinite).map(v => Math.max(0, Math.min(100, v)));
+}
+function drawSparkline(ctx, values, x, y, w, h) {
+  if (!values.length || w < 3 || h < 3) return;
+  let low = Math.min(...values), high = Math.max(...values);
+  const span = high - low;
+  if (span < 1) {
+    const center = (low + high) / 2;
+    low = Math.max(0, center - 5);
+    high = Math.min(100, center + 5);
+  } else {
+    const padding = Math.max(1, span * 0.15);
+    low = Math.max(0, low - padding);
+    high = Math.min(100, high + padding);
+  }
+  if (high <= low) high = low + 1;
+  const point = (i, value) => [
+    x + (w - 1) * (values.length === 1 ? 0.5 : i / (values.length - 1)),
+    y + h - 1 - (value - low) / (high - low) * (h - 1),
+  ];
+  const points = values.map(point);
+  if (points.length > 1) {
+    ctx.strokeStyle = rgb(BLACK);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+    ctx.stroke();
+  }
+  const [px, py] = points[points.length - 1];
+  ctx.fillStyle = rgb(RED);
+  ctx.beginPath();
+  ctx.arc(px, py, 2, 0, Math.PI * 2);
+  ctx.fill();
+}
+function drawTotalUsageChart(ctx, history, x0, y0, config) {
+  if (config.show === false) return;
+  setFont(ctx, config.label_font ?? 9, true, true);
+  ctx.fillStyle = rgb(BLACK);
+  ctx.fillText(config.label || "总用量", x0 + (config.label_x ?? 282), y0 + (config.label_y ?? 0) + (config.label_font ?? 9));
+  drawSparkline(
+    ctx,
+    historyValues(history, "total"),
+    x0 + (config.x ?? 282),
+    y0 + (config.y ?? 13),
+    config.w ?? 110,
+    config.h ?? 19,
+  );
+}
+function parseDate(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  return isNaN(d) ? null : d;
+}
+function relativeReset(w, nowMs) {
+  if (w.missing || !w.reset_at) return "—";
+  const dt = new Date(w.reset_at).getTime();
+  if (isNaN(dt)) return "—";
+  const delta = dt - nowMs;
+  if (delta <= 0) return "已重置";
+  const days = Math.floor(delta / 86400000);
+  const hours = Math.floor((delta % 86400000) / 3600000);
+  const mins = Math.floor((delta % 3600000) / 60000);
+  if (days > 0) return `${days}天${hours}时`;
+  if (hours > 0) return `${hours}时${mins}分`;
+  return `${mins}分`;
+}
+function isAlert(rec) {
+  if (rec.status !== "ok") return true;
+  const r = rec.remaining_percent != null ? Number(rec.remaining_percent) : null;
+  if (r != null && r <= 15) return true;
+  for (const w of pickDisplayWindows(rec)) {
+    if (w.missing) continue;
+    const wr = winRemainingPercent(w);
+    if (wr != null && wr <= 15) return true;
+  }
+  return false;
+}
+
+// ---- 绘图（对应 layout.py，输出到离屏 400×300 再量化 BWR）----
+function makeCtx() {
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "rgb(255,255,255)";
+  ctx.fillRect(0, 0, W, H);
+  return ctx;
+}
+const FONT_LATIN = "-apple-system, 'Segoe UI', Arial, sans-serif";
+const FONT_CJK = "-apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif";
+
+function setFont(ctx, size, bold, cjk) {
+  ctx.font = `${bold ? "bold " : ""}${size}px ${cjk ? FONT_CJK : FONT_LATIN}`;
+  ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "left";
+}
+function textWidth(ctx, text) {
+  return ctx.measureText(text).width;
+}
+function rgb(c) { return `rgb(${c[0]},${c[1]},${c[2]})`; }
+
+function drawLogo(ctx, cx, cy, size, kind, ink) {
+  const h = size / 2;
+  const hex = (cx, cy, r, rot) => {
+    const pts = [];
+    for (let i = 0; i < 6; i++) pts.push([cx + r * Math.cos(rot + i * Math.PI / 3), cy + r * Math.sin(rot + i * Math.PI / 3)]);
+    return pts;
+  };
+  const poly = pts => {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+  };
+  ctx.fillStyle = rgb(ink);
+  if (kind === "codex") {
+    poly(hex(cx, cy, h * 0.96, 0)); ctx.fill();
+    ctx.fillStyle = "rgb(255,255,255)";
+    poly(hex(cx, cy, h * 0.44, Math.PI / 6)); ctx.fill();
+  } else if (kind === "grok") {
+    const w = Math.max(2, size * 0.16);
+    ctx.strokeStyle = rgb(ink); ctx.lineWidth = w; ctx.lineCap = "butt";
+    ctx.beginPath(); ctx.moveTo(cx - h * 0.8, cy - h * 0.8); ctx.lineTo(cx + h * 0.8, cy + h * 0.8); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - h * 0.8, cy + h * 0.8); ctx.lineTo(cx + h * 0.8, cy - h * 0.8); ctx.stroke();
+  } else if (kind === "kimi") {
+    ctx.beginPath(); ctx.arc(cx, cy, h, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgb(255,255,255)";
+    ctx.beginPath(); ctx.ellipse(cx + h * 0.3, cy - h * 0.1, h * 0.6, h * 0.95, 0, 0, Math.PI * 2); ctx.fill();
+  } else if (kind === "opencode") {
+    const w = Math.max(2, size * 0.17);
+    ctx.strokeStyle = rgb(ink); ctx.lineWidth = w; ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx - h * 0.6, cy - h * 0.72);
+    ctx.lineTo(cx + h * 0.55, cy);
+    ctx.lineTo(cx - h * 0.6, cy + h * 0.72);
+    ctx.stroke();
+  } else if (kind === "ollama") {
+    ctx.fillStyle = rgb(ink);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + h * 0.1, h * 0.62, h * 0.68, 0, 0, Math.PI * 2);
+    ctx.fill();
+    poly([[cx - h * 0.55, cy - h * 0.18], [cx - h * 0.9, cy - h * 0.95], [cx - h * 0.18, cy - h * 0.7]]); ctx.fill();
+    poly([[cx + h * 0.55, cy - h * 0.18], [cx + h * 0.9, cy - h * 0.95], [cx + h * 0.18, cy - h * 0.7]]); ctx.fill();
+  } else if (kind === "windsurf") {
+    ctx.strokeStyle = rgb(ink); ctx.lineWidth = Math.max(2, size * 0.15); ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx - h * 0.9, cy - h * 0.45);
+    ctx.lineTo(cx - h * 0.35, cy + h * 0.55);
+    ctx.lineTo(cx, cy - h * 0.1);
+    ctx.lineTo(cx + h * 0.35, cy + h * 0.55);
+    ctx.lineTo(cx + h * 0.9, cy - h * 0.45);
+    ctx.stroke();
+  }
+}
+
+function wrapCjk(ctx, text, fontPx, maxW, maxLines) {
+  const lines = [];
+  let t = text;
+  while (t && lines.length < maxLines) {
+    if (textWidth(ctx, t) <= maxW) { lines.push(t); return lines; }
+    let lo = 1, hi = t.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi + 1) / 2);
+      if (textWidth(ctx, t.slice(0, mid)) <= maxW) lo = mid; else hi = mid - 1;
+    }
+    let cut = lo;
+    for (let i = lo; i > 1; i--) {
+      if ("，。；、：！？".includes(t[i - 1])) { cut = i; break; }
+    }
+    lines.push(t.slice(0, cut));
+    t = t.slice(cut).replace(/^\s+/, "");
+  }
+  if (t && lines.length) lines[lines.length - 1] = lines[lines.length - 1].slice(0, -1) + "…";
+  return lines;
+}
+
+const MARKET_ORDER = ["sh", "sz", "spx", "ndx"];
+const MARKET_LABELS = { sh: "沪", sz: "深", spx: "标普", ndx: "纳" };
+function marketRuns(market) {
+  if (!market || !Array.isArray(market.items)) return [];
+  const byKey = Object.fromEntries(market.items.filter(item => item && item.key).map(item => [String(item.key), item]));
+  const runs = [];
+  for (const key of MARKET_ORDER) {
+    const item = byKey[key];
+    const change = Number(item && item.change_percent);
+    if (!Number.isFinite(change)) continue;
+    if (runs.length) runs.push({ text: key === "spx" ? "  |  " : "  ", color: BLACK });
+    const sign = change >= 0 ? "+" : "";
+    runs.push({ text: `${MARKET_LABELS[key]}${sign}${change.toFixed(1)}%`, color: change > 0 ? RED : BLACK });
+  }
+  return runs;
+}
+function drawMarketHeader(ctx, market, x, y, w, timeX, fontSize = 9) {
+  const runs = marketRuns(market);
+  if (!runs.length) return;
+  let size = fontSize;
+  setFont(ctx, size, true, true);
+  let width = runs.reduce((sum, run) => sum + textWidth(ctx, run.text), 0);
+  const left = x + 126;
+  const right = timeX - 8;
+  const available = right - left;
+  if (width > available) {
+    size = Math.max(8, size - 1);
+    setFont(ctx, size, true, true);
+    width = runs.reduce((sum, run) => sum + textWidth(ctx, run.text), 0);
+  }
+  const start = width > available ? x + 8 : left + Math.max(0, Math.floor((available - width) / 2));
+  let xx = start;
+  for (const run of runs) {
+    ctx.fillStyle = rgb(run.color);
+    ctx.fillText(run.text, xx, y + size);
+    xx += textWidth(ctx, run.text);
+  }
+}
+
+function drawHeader(ctx, b, nowMs, market) {
+  const showBorder = b.border !== false;
+  if (b.show_title !== false) {
+    setFont(ctx, b.title_font ?? 13, true, false);
+    ctx.fillStyle = rgb(BLACK);
+    ctx.fillText(String(b.title || "AI Quotas").toUpperCase(), b.x + 10, b.y + 5 + (b.title_font ?? 13));
+  }
+  if (b.show_time !== false) {
+    const t = fmtBJ(new Date(nowMs));
+    setFont(ctx, b.time_font ?? 14, true, false);
+    const tw = textWidth(ctx, t);
+    ctx.fillStyle = rgb(BLACK);
+    ctx.fillText(t, b.x + b.w - 10 - tw, b.y + 3 + (b.time_font ?? 14));
+    drawMarketHeader(ctx, market, b.x, b.y + (b.market_y ?? 5), b.w, b.x + b.w - 10 - tw, b.market_font ?? 9);
+  }
+  if (b.show_calendar !== false) {
+    setFont(ctx, b.cjk_font ?? 9, false, true);
+    ctx.fillStyle = rgb(BLACK);
+    const calendarY = b.calendar_y ?? (b.show_title === false ? 4 : 28);
+    ctx.fillText(chinaCalendarLine(), b.x + 10, b.y + calendarY + (b.cjk_font ?? 9));
+  }
+  if (showBorder) {
+    ctx.fillStyle = rgb(BLACK);
+    ctx.fillRect(b.x, b.y + b.h - 1, b.w, 1);
+  }
+}
+
+function drawRow(ctx, b, rec, nowMs, history) {
+  const recObj = rec || { name: b.service, status: "unavailable", detail: "missing" };
+  const x0 = b.x, y0 = b.y, w = b.w, h = b.h;
+  const alert = isAlert(recObj);
+  const el = rowElements(b);
+
+  if (el.logo.show) {
+    const cy = y0 + el.logo.cy * h;
+    const logoKind = b.service === "opencode-go" ? "opencode" : (b.service === "ollama-pro" ? "ollama" : b.service);
+    drawLogo(ctx, x0 + el.logo.x, cy, el.logo.size, logoKind, BLACK);
+  }
+
+  if (el.name.show) {
+    setFont(ctx, el.name.font, true, false);
+    ctx.fillStyle = rgb(elColor(el.name, alert));
+    ctx.fillText(SERVICE_LABEL[recObj.name] || recObj.name, x0 + el.name.x, y0 + el.name.y + el.name.font);
+  }
+
+  const detail = (recObj.detail || "").toLowerCase();
+  let sub;
+  if (recObj.name === "codex") sub = /plus/.test(detail) ? "PLUS · OFFICIAL" : "OFFICIAL";
+  else if (recObj.name === "grok") sub = /weekly/.test(detail) ? "WEEKLY" : "GROK BUILD";
+  else if (recObj.name === "kimi") sub = "CODING PLAN";
+  else if (recObj.name === "ollama-pro") sub = "PRO · CLOUD";
+  else if (recObj.name === "windsurf") sub = "WINDSURF";
+  else sub = "GO PLAN";
+  if (el.subtitle.show) {
+    setFont(ctx, el.subtitle.font, true, false);
+    ctx.fillStyle = rgb(elColor(el.subtitle, alert));
+    ctx.fillText(sub, x0 + el.subtitle.x, y0 + el.subtitle.y + el.subtitle.font);
+  }
+
+  if (recObj.status !== "ok") {
+    if (el.status.show) {
+      setFont(ctx, el.status.font, true, false);
+      ctx.fillStyle = rgb(RED);
+      ctx.fillText(String(recObj.status).toUpperCase(), x0 + el.status.x, y0 + el.status.y + el.status.font);
+    }
+    if (el.status_msg.show) {
+      let msg = recObj.detail || "no details";
+      if (msg.length > 36) msg = msg.slice(0, 33) + "...";
+      setFont(ctx, el.status_msg.font, true, false);
+      ctx.fillStyle = rgb(BLACK);
+      ctx.fillText(msg, x0 + el.status_msg.x, y0 + el.status_msg.y + el.status_msg.font);
+    }
+    if (b.border !== false) { ctx.fillStyle = rgb(BLACK); ctx.fillRect(b.x, b.y, b.w, 1); }
+    return;
+  }
+
+  const kindLabel = { "5h": "5h", week: "wk" };
+  const slots = pickDisplayWindows(recObj);
+  const realWindows = slots.filter(w => !w.missing);
+  if (realWindows.length === 1 && el.hero.show) {
+    const wd = realWindows[0];
+    const tag = wd.display_label || kindLabel[String(wd.kind || "?")] || "?";
+    if (el.hero.show) {
+      const hero = balanceParts(wd).map(p => p.text).join("");
+      setFont(ctx, el.hero.font, true, false);
+      const hw = textWidth(ctx, hero);
+      const heroX = x0 + w - el.hero.right - hw;
+      const heroY = y0 + el.hero.y + el.hero.font;
+      ctx.fillStyle = rgb(RED);
+      ctx.fillText(hero, heroX, heroY);
+      const dt = deltaText(wd);
+      if (dt) {
+        setFont(ctx, 9, true, false);
+        ctx.fillStyle = rgb((deltaValue(wd) || 0) < 0 ? RED : BLACK);
+        ctx.fillText(dt, heroX - textWidth(ctx, dt) - 4, heroY - el.hero.font + 7);
+      }
+    }
+    if (el.col1.show) {
+      setFont(ctx, el.col1.detail_font, false, true);
+      ctx.fillStyle = rgb(BLACK);
+      ctx.fillText(`${tag}  ${relativeReset(wd, nowMs)}`, x0 + el.col1.x, y0 + el.col1.detail_y + el.col1.detail_font);
+    }
+  } else {
+    // Keep both canonical columns visible so a weekly-only provider stays
+    // aligned with every other row.
+    for (const [colKey, wd] of [["col1", slots[0]], ["col2", slots[1]]]) {
+      const col = el[colKey];
+      if (!col.show) continue;
+      const tag = wd.display_label || kindLabel[String(wd.kind || "?")] || "?";
+      setFont(ctx, col.tag_font, true, false);
+      ctx.fillStyle = rgb(BLACK);
+      ctx.fillText(tag, x0 + col.x, y0 + col.tag_y + col.tag_font);
+      let bx = x0 + col.x + col.balance_dx;
+      setFont(ctx, col.balance_font, true, false);
+      for (const p of balanceParts(wd)) {
+        ctx.fillStyle = rgb(p.color === "red" ? RED : BLACK);
+        ctx.fillText(p.text, bx, y0 + col.balance_y + col.balance_font);
+        bx += textWidth(ctx, p.text);
+      }
+      const dt = deltaText(wd);
+      if (dt) {
+        setFont(ctx, col.delta_font ?? 9, true, false);
+        ctx.fillStyle = rgb((deltaValue(wd) || 0) < 0 ? RED : BLACK);
+        ctx.fillText(dt, bx + (col.delta_dx ?? 3), y0 + (col.delta_y ?? 4) + (col.delta_font ?? 9));
+      }
+      setFont(ctx, col.detail_font, false, true);
+      ctx.fillStyle = rgb(BLACK);
+      ctx.fillText(relativeReset(wd, nowMs), x0 + col.x, y0 + col.detail_y + col.detail_font);
+    }
+  }
+  drawTotalUsageChart(ctx, history, x0, y0, el.chart);
+  if (b.border !== false) { ctx.fillStyle = rgb(BLACK); ctx.fillRect(b.x, b.y, b.w, 1); }
+}
+
+function drawQuote(ctx, b) {
+  if (b.border !== false) { ctx.fillStyle = rgb(BLACK); ctx.fillRect(b.x, b.y, b.w, 1); }
+  const quote = SAMPLE_QUOTES[Math.floor(Math.random() * SAMPLE_QUOTES.length)];
+  if (!quote.q) return;
+  const qf = b.quote_font ?? 19;
+  const ef = b.explain_font ?? 12;
+  const maxW = Math.max(8, b.w - 16);
+  setFont(ctx, qf, false, true);
+  const qLines = wrapCjk(ctx, quote.q, qf, maxW, 1);
+  setFont(ctx, ef, true, true);
+  const eLines = wrapCjk(ctx, quote.e, ef, maxW, 1);
+  const qLineH = Math.max(1, Math.round(qf * 1.12));
+  const eLineH = Math.max(1, Math.round(ef * 1.16));
+  const blockH = qLineH * qLines.length + 4 + eLineH * eLines.length;
+  let yy = b.y + Math.max(7, Math.floor((b.h - blockH) / 2));
+  setFont(ctx, qf, false, true);
+  ctx.fillStyle = rgb(BLACK);
+  for (const ln of qLines) { ctx.fillText(ln, b.x + 8, yy + qf); yy += qLineH; }
+  yy += 4;
+  setFont(ctx, ef, true, true);
+  for (const ln of eLines) { ctx.fillText(ln, b.x + 8, yy + ef); yy += eLineH; }
+}
+
+function quantizeBWR(ctx) {
+  const img = ctx.getImageData(0, 0, W, H);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    if (r > 120 && r > g * 1.6 && r > b * 1.6 && (g + b) < 300) {
+      d[i] = 255; d[i + 1] = 0; d[i + 2] = 0;
+    } else if ((r + g + b) / 3 < 160) {
+      d[i] = 0; d[i + 1] = 0; d[i + 2] = 0;
+    } else {
+      d[i] = 255; d[i + 1] = 255; d[i + 2] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function render() {
+  const ctx = makeCtx();
+  const nowMs = beijingNow().getTime();
+  const recs = {};
+  for (const r of SAMPLE_RECORDS) recs[r.name] = r;
+
+  for (const b of layout.blocks) {
+    if (b.hidden) continue;
+    if (b.type === "header") drawHeader(ctx, b, nowMs, SAMPLE_MARKET);
+    else if (b.type === "row") drawRow(ctx, b, recs[b.service], nowMs, SAMPLE_HISTORY[b.service]);
+    else if (b.type === "quote") drawQuote(ctx, b);
+  }
+  quantizeBWR(ctx);
+
+  const cv = document.getElementById("preview");
+  const out = cv.getContext("2d");
+  out.imageSmoothingEnabled = false;
+  out.clearRect(0, 0, cv.width, cv.height);
+  out.drawImage(ctx.canvas, 0, 0, W, H, 0, 0, cv.width, cv.height);
+}
+
+// ---- 块覆层（拖拽 + 缩放）----
+function rebuildOverlays() {
+  const container = document.getElementById("blocks");
+  container.innerHTML = "";
+  for (const b of layout.blocks) {
+    const el = document.createElement("div");
+    el.className = "block";
+    el.dataset.id = b.id;
+    el.style.left = (b.x * SCALE) + "px";
+    el.style.top = (b.y * SCALE) + "px";
+    el.style.width = (b.w * SCALE) + "px";
+    el.style.height = (b.h * SCALE) + "px";
+    el.style.display = b.hidden ? "none" : "block";
+
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = blockLabel(b);
+    el.appendChild(label);
+
+    const handle = document.createElement("span");
+    handle.className = "handle";
+    el.appendChild(handle);
+
+    el.addEventListener("pointerdown", e => {
+      e.stopPropagation();
+      selectBlock(b.id);
+      const startX = e.clientX, startY = e.clientY;
+      const bx = b.x, by = b.y;
+      const onMove = ev => {
+        const dx = (ev.clientX - startX) / SCALE;
+        const dy = (ev.clientY - startY) / SCALE;
+        b.x = clamp(bx + dx, 0, W - b.w);
+        b.y = clamp(by + dy, 0, H - b.h);
+        positionOverlay(el, b);
+        render();
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        renderProps();
+        render();
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    });
+
+    handle.addEventListener("pointerdown", e => {
+      e.stopPropagation();
+      selectBlock(b.id);
+      const startX = e.clientX, startY = e.clientY;
+      const bw = b.w, bh = b.h;
+      const onMove = ev => {
+        const dx = (ev.clientX - startX) / SCALE;
+        const dy = (ev.clientY - startY) / SCALE;
+        b.w = clamp(bw + dx, 20, W - b.x);
+        b.h = clamp(bh + dy, 20, H - b.y);
+        positionOverlay(el, b);
+        render();
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        renderProps();
+        render();
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    });
+    container.appendChild(el);
+  }
+  syncOverlaySelection();
+  rebuildList();
+}
+
+function positionOverlay(el, b) {
+  el.style.left = (b.x * SCALE) + "px";
+  el.style.top = (b.y * SCALE) + "px";
+  el.style.width = (b.w * SCALE) + "px";
+  el.style.height = (b.h * SCALE) + "px";
+}
+
+function blockLabel(b) {
+  if (b.type === "header") return "标题/时间";
+  if (b.type === "row") return "额度行 " + (SERVICE_LABEL[b.service] || b.service);
+  if (b.type === "quote") return "道德经";
+  return b.type;
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, Math.round(v))); }
+
+function selectBlock(id) {
+  selectedId = id;
+  const container = document.getElementById("blocks");
+  for (const el of container.querySelectorAll(".block")) {
+    el.classList.toggle("selected", el.dataset.id === id);
+  }
+  renderProps();
+}
+
+function syncOverlaySelection() {
+  const container = document.getElementById("blocks");
+  for (const el of container.querySelectorAll(".block")) {
+    el.classList.toggle("selected", el.dataset.id === selectedId);
+  }
+}
+
+function rebuildList() {
+  const list = document.getElementById("blocksList");
+  list.innerHTML = "";
+  for (const b of layout.blocks) {
+    const item = document.createElement("div");
+    item.className = "block-item" + (b.id === selectedId ? " active" : "");
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    badge.textContent = b.type === "row" ? (SERVICE_LABEL[b.service] || b.service) : b.type;
+    const name = document.createElement("span");
+    name.textContent = blockLabel(b);
+    const eye = document.createElement("span");
+    eye.className = "eye";
+    eye.textContent = b.hidden ? "◌" : "●";
+    eye.title = b.hidden ? "显示" : "隐藏";
+    eye.addEventListener("click", e => {
+      e.stopPropagation();
+      b.hidden = !b.hidden;
+      render(); rebuildOverlays();
+    });
+    item.append(badge, name, eye);
+    item.addEventListener("click", () => selectBlock(b.id));
+    list.appendChild(item);
+  }
+}
+
+// ---- 属性面板 ----
+function renderProps() {
+  const box = document.getElementById("props");
+  const b = getBlock(selectedId);
+  if (!b) {
+    box.innerHTML = '<p class="hint full">请选择一个块以编辑其位置、尺寸、字体与开关。</p>';
+    return;
+  }
+  // 滑块：label 显示当前值，拖动实时更新
+  const slider = (label, key, min, max, step) => `
+    <div class="field full"><label>${label} <span class="cur">${b[key] ?? min}</span></label>
+      <input type="range" min="${min}" max="${max}" step="${step ?? 1}" value="${b[key] ?? min}"
+        oninput="setProp('${key}', +this.value, 'num')"></div>`;
+  const txt = (label, key) => `
+    <div class="field full"><label>${label}</label>
+      <input type="text" value="${escapeHtml(b[key] ?? "")}"
+        onchange="setProp('${key}', this.value, 'text')"></div>`;
+  const chk = (label, key) => `
+    <div class="field check"><input type="checkbox" ${b[key] !== false ? "checked" : ""} id="chk-${key}"
+      onchange="setProp('${key}', this.checked, 'bool')"><label for="chk-${key}">${label}</label></div>`;
+  const sel = (label, key, opts) => `
+    <div class="field full"><label>${label}</label>
+      <select onchange="setProp('${key}', this.value, 'text')">
+        ${opts.map(o => `<option value="${o}" ${b[key] === o ? "selected" : ""}>${o}</option>`).join("")}
+      </select></div>`;
+
+  // 行内子元素滑块：e = elements.<group>.<key>，可配位置/字号/颜色/开关
+  const eslider = (group, label, key, min, max, step, def) => {
+    const e = (b.elements && b.elements[group]) || {};
+    const val = e[key] ?? def;
+    return `
+      <div class="field full"><label>${label} <span class="cur">${val}</span></label>
+        <input type="range" min="${min}" max="${max}" step="${step ?? 1}" value="${val}"
+          oninput="setElProp('${group}', '${key}', +this.value)"></div>`;
+  };
+  const echk = (group, label, key, def) => {
+    const e = (b.elements && b.elements[group]) || {};
+    const on = e[key] ?? def;
+    return `
+      <div class="field check"><input type="checkbox" ${on ? "checked" : ""} id="elchk-${group}-${key}"
+        onchange="setElProp('${group}', '${key}', this.checked)"><label for="elchk-${group}-${key}">${label}</label></div>`;
+  };
+  const esel = (group, label, key, opts, def) => {
+    const e = (b.elements && b.elements[group]) || {};
+    const val = e[key] ?? def;
+    return `
+      <div class="field full"><label>${label}</label>
+        <select onchange="setElProp('${group}', '${key}', this.value)">
+          ${opts.map(o => `<option value="${o}" ${String(val) === o ? "selected" : ""}>${o}</option>`).join("")}
+        </select></div>`;
+  };
+  const group = (title, inner) =>
+    `<div class="field full" style="margin-top:4px"><div class="subgroup"><b>${title}</b>${inner}</div></div>`;
+
+  let html = slider("X", "x", 0, W - 20, 1) + slider("Y", "y", 0, H - 20, 1)
+    + slider("宽", "w", 40, W, 1) + slider("高", "h", 20, H, 1);
+
+  if (b.type === "header") {
+    html += txt("标题文字", "title");
+    html += slider("标题字号", "title_font", 8, 40, 1) + slider("时间字号", "time_font", 8, 48, 1)
+      + slider("农历字号", "cjk_font", 8, 40, 1);
+    html += `<div class="full"></div>` + chk("显示标题", "show_title") + chk("显示时间", "show_time")
+      + chk("显示农历", "show_calendar") + chk("显示边框", "border");
+  } else if (b.type === "row") {
+    if (!b.id.startsWith("row-")) {
+      html += sel("服务", "service", SERVICES);
+    }
+    html += chk("显示边框", "border");
+    html += group("Logo", echk("logo", "显示", "show", true)
+      + eslider("logo", "X 偏移", "x", 0, 200, 1, 9)
+      + eslider("logo", "垂直位置(0-1)", "cy", 0, 1, 0.05, 0.5)
+      + eslider("logo", "大小", "size", 8, 40, 1, 11));
+    html += group("名称", echk("name", "显示", "show", true)
+      + eslider("name", "X", "x", 0, 300, 1, 22)
+      + eslider("name", "Y", "y", 0, 40, 1, 4)
+      + eslider("name", "字号", "font", 8, 48, 1, 12)
+      + esel("name", "颜色", "color", ["auto", "black", "red"], "auto"));
+    html += group("副标题", echk("subtitle", "显示", "show", false)
+      + eslider("subtitle", "X", "x", 0, 300, 1, 29)
+      + eslider("subtitle", "Y", "y", 0, 40, 1, 22)
+      + eslider("subtitle", "字号", "font", 8, 32, 1, 8)
+      + esel("subtitle", "颜色", "color", ["black", "red"], "black"));
+    html += group("大字(单窗口)", echk("hero", "显示", "show", false)
+      + eslider("hero", "距右缘", "right", 0, 200, 1, 12)
+      + eslider("hero", "Y 偏移", "y", -20, 20, 1, -2)
+      + eslider("hero", "字号", "font", 10, 64, 1, 26));
+    html += group("总用量趋势", echk("chart", "显示", "show", true)
+      + eslider("chart", "X", "x", 180, 360, 1, 282)
+      + eslider("chart", "Y", "y", 0, 25, 1, 13)
+      + eslider("chart", "宽", "w", 30, 140, 1, 110)
+      + eslider("chart", "高", "h", 8, 30, 1, 19)
+      + eslider("chart", "标签字号", "label_font", 8, 20, 1, 9));
+    html += group("5h 列", echk("col1", "显示", "show", true)
+      + eslider("col1", "X", "x", 40, 260, 1, 95)
+      + eslider("col1", "标签字号", "tag_font", 8, 32, 1, 10)
+      + eslider("col1", "额度字号", "balance_font", 10, 48, 1, 20)
+      + eslider("col1", "说明字号", "detail_font", 8, 32, 1, 9));
+    html += group("周 列", echk("col2", "显示", "show", true)
+      + eslider("col2", "X", "x", 100, 280, 1, 195)
+      + eslider("col2", "标签字号", "tag_font", 8, 32, 1, 10)
+      + eslider("col2", "额度字号", "balance_font", 10, 48, 1, 20)
+      + eslider("col2", "说明字号", "detail_font", 8, 32, 1, 9));
+  } else if (b.type === "quote") {
+    html += slider("正文字号", "quote_font", 8, 48, 1) + slider("译文字号", "explain_font", 8, 32, 1);
+    html += `<div class="full"></div>` + chk("显示边框", "border");
+  }
+
+  html += `
+    <div class="row-actions full">
+      <button class="danger" onclick="removeBlock('${b.id}')">删除此块</button>
+    </div>`;
+  box.innerHTML = html;
+}
+
+function setProp(key, value, kind) {
+  const b = getBlock(selectedId);
+  if (!b) return;
+  if (kind === "num") value = Math.round(value * 100) / 100;
+  b[key] = value;
+  render();
+  rebuildOverlays();
+}
+
+function setElProp(group, key, value) {
+  const b = getBlock(selectedId);
+  if (!b) return;
+  b.elements = b.elements || {};
+  b.elements[group] = b.elements[group] || {};
+  b.elements[group][key] = (typeof value === "number") ? Math.round(value * 100) / 100 : value;
+  render();
+  rebuildOverlays();
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// ---- 增删块 ----
+function addBlock(type) {
+  let b;
+  if (type === "header") {
+    b = { id: uid(), type: "header", x: 0, y: 0, w: W, h: 27, title: "AI Quotas", title_font: 13, time_font: 14, cjk_font: 9, market_font: 9, show_title: false, show_time: true, show_calendar: true, calendar_y: 3, border: true };
+  } else if (type === "row") {
+    const missing = SERVICES.find(s => !layout.blocks.some(x => x.type === "row" && x.service === s));
+    const service = missing || SERVICES[0];
+    b = { id: uid(), type: "row", service, x: 10, y: 60, w: 380, h: 35, border: true, elements: JSON.parse(JSON.stringify(ROW_ELEMENT_DEFAULTS)) };
+  } else {
+    b = { id: uid(), type: "quote", x: 0, y: 240, w: W, h: 60, quote_font: 19, explain_font: 12, border: true };
+  }
+  layout.blocks.push(b);
+  selectBlock(b.id);
+}
+
+function removeBlock(id) {
+  layout.blocks = layout.blocks.filter(x => x.id !== id);
+  if (selectedId === id) selectedId = null;
+  render(); rebuildOverlays();
+}
+
+function resetLayout() {
+  layout = defaultLayout();
+  selectedId = null;
+  render(); rebuildOverlays();
+}
+
+// ---- JSON 导入导出 ----
+function serialize() {
+  return JSON.stringify(layout, null, 2);
+}
+
+function openExport() {
+  const ta = document.getElementById("jsonText");
+  ta.value = serialize();
+  document.getElementById("jsonDialog").showModal();
+}
+function openImport() {
+  const ta = document.getElementById("jsonText");
+  ta.value = "";
+  ta.placeholder = "粘贴或输入布局 JSON，然后点「应用此 JSON」";
+  document.getElementById("jsonDialog").showModal();
+  ta.focus();
+}
+function closeJson() { document.getElementById("jsonDialog").close(); }
+function downloadJson() {
+  const blob = new Blob([serialize()], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "layout.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+function applyJson() {
+  try {
+    const data = JSON.parse(document.getElementById("jsonText").value);
+    if (!data || !Array.isArray(data.blocks)) throw new Error("缺少 blocks 数组");
+    if (data.canvas && (data.canvas.w !== W || data.canvas.h !== H)) {
+      throw new Error(`画布尺寸不匹配：期望 ${W}×${H}，得到 ${data.canvas.w}×${data.canvas.h}`);
+    }
+    layout = data;
+    selectedId = null;
+    render(); rebuildOverlays();
+    closeJson();
+  } catch (e) {
+    alert("JSON 无效：" + e.message);
+  }
+}
+async function copyToClipboard() {
+  try {
+    await navigator.clipboard.writeText(serialize());
+    alert("配置已复制到剪贴板");
+  } catch {
+    openExport();
+  }
+}
+
+// ---- 初始化 ----
+render();
+rebuildOverlays();
+</script>
+</body>
+</html>

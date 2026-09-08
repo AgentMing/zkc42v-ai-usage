@@ -580,8 +580,12 @@ class SendProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     var manager: CBCentralManager!
     let target: String
     let frameFile: String
+    let oldFrameFile: String?
     var sendInit: Bool = false
     var initParam: Data? = nil
+    var allowRedPartial: Bool = false
+    var partialMaxArea: Double = 0.35
+    var partialMaxRects: Int = 32
     var peripheral: CBPeripheral?
     var pendingServices = 0
     var discoveredServices = 0
@@ -589,9 +593,28 @@ class SendProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     var startTime = Date()
     var cmdChar: CBCharacteristic?
 
-    init(target: String, frameFile: String) {
+    struct Step {
+        let data: Data
+        let type: CBCharacteristicWriteType
+        let delayAfter: TimeInterval
+        let label: String?
+    }
+
+    struct Rect: Equatable {
+        let x: Int
+        let y: Int
+        let w: Int
+        let h: Int
+
+        var xByte: Int { x / 8 }
+        var byteWidth: Int { w / 8 }
+        var area: Int { w * h }
+    }
+
+    init(target: String, frameFile: String, oldFrameFile: String? = nil) {
         self.target = target
         self.frameFile = frameFile
+        self.oldFrameFile = oldFrameFile
         super.init()
     }
 
@@ -677,44 +700,60 @@ class SendProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         }
         print("frame: \(frame.w)x\(frame.h), black \(frame.black.count)B red \(frame.red.count)B")
 
-        // Proven sequence for ZKC42V / GR5513 v1.10 (user-confirmed for clock/bigtest):
-        //   INIT(0x01, model) → SET_SLOT(0x31,[0,slot]) → WRITE_IMG RLE → REFRESH(0x05)
-        // Avoid extras that regress on this firmware:
-        //   SLEEP(0x06)  → can leave full black after a good refresh
-        //   SET_SLIDE    → unknown payload; empty slots are black RAM → flash then black
-        //   SET_TIME     → force GUI; MODE_PICTURE = fill white
-        struct Step {
-            let data: Data
-            let type: CBCharacteristicWriteType
-            let delayAfter: TimeInterval
-            let label: String?
-        }
         var steps: [Step] = []
 
         let initModel: UInt8 = initParam?.first ?? 0x02
-        steps.append(Step(data: Data([0x01, initModel]), type: .withResponse,
-                          delayAfter: 0.20, label: "INIT model=0x\(String(format: "%02x", initModel))"))
-
-        steps.append(Step(data: Data([0x31, 0x00, 0x00]), type: .withResponse,
-                          delayAfter: 0.05, label: "SET_SLOT slot=0"))
-
-        let blackRle = rleCompress(frame.black)
-        let redRle = rleCompress(frame.red)
-        print("+ black \(frame.black.count)B -> RLE \(blackRle.count)B, red \(frame.red.count)B -> RLE \(redRle.count)B")
-
-        let chunk = 233
-        var planeWrites: [(Data, CBCharacteristicWriteType)] = []
-        appendRleChunks(&planeWrites, plane: blackRle, planeFlag: 0, chunk: chunk)
-        appendRleChunks(&planeWrites, plane: redRle, planeFlag: 1, chunk: chunk)
-        for (i, w) in planeWrites.enumerated() {
-            let isLast = i == planeWrites.count - 1
-            // Slightly longer pause after last plane so RAM is settled before REFRESH
-            steps.append(Step(data: w.0, type: w.1,
-                              delayAfter: isLast ? 0.20 : 0.03, label: nil))
+        var usedPartial = false
+        if let oldPath = oldFrameFile {
+            if let oldFrame = readFrame(at: oldPath) {
+                if let plan = makePartialSteps(old: oldFrame, new: frame, initModel: initModel) {
+                    if plan.rects.isEmpty {
+                        print("frame unchanged; skipped BLE push")
+                        save()
+                        exit(0)
+                    }
+                    steps = plan.steps
+                    usedPartial = true
+                    let ratio = Double(plan.rects.reduce(0) { $0 + $1.area }) /
+                        Double(frame.w * frame.h)
+                    print("partial frame: rects=\(plan.rects.count), dirty area=\(String(format: "%.1f", ratio * 100))%")
+                }
+            } else {
+                print("previous frame missing or invalid; falling back to full refresh")
+            }
         }
 
-        steps.append(Step(data: Data([0x05]), type: .withResponse,
-                          delayAfter: 1.0, label: "REFRESH"))
+        if !usedPartial {
+            // Proven sequence for ZKC42V / GR5513 v1.10 (user-confirmed for clock/bigtest):
+            //   INIT(0x01, model) → SET_SLOT(0x31,[0,slot]) → WRITE_IMG RLE → REFRESH(0x05)
+            // Avoid extras that regress on this firmware:
+            //   SLEEP(0x06)  → can leave full black after a good refresh
+            //   SET_SLIDE    → unknown payload; empty slots are black RAM → flash then black
+            //   SET_TIME     → force GUI; MODE_PICTURE = fill white
+            steps.append(Step(data: Data([0x01, initModel]), type: .withResponse,
+                              delayAfter: 0.20, label: "INIT model=0x\(String(format: "%02x", initModel))"))
+
+            steps.append(Step(data: Data([0x31, 0x00, 0x00]), type: .withResponse,
+                              delayAfter: 0.05, label: "SET_SLOT slot=0"))
+
+            let blackRle = rleCompress(frame.black)
+            let redRle = rleCompress(frame.red)
+            print("+ black \(frame.black.count)B -> RLE \(blackRle.count)B, red \(frame.red.count)B -> RLE \(redRle.count)B")
+
+            let chunk = 233
+            var planeWrites: [(Data, CBCharacteristicWriteType)] = []
+            appendRleChunks(&planeWrites, plane: blackRle, planeFlag: 0, chunk: chunk)
+            appendRleChunks(&planeWrites, plane: redRle, planeFlag: 1, chunk: chunk)
+            for (i, w) in planeWrites.enumerated() {
+                let isLast = i == planeWrites.count - 1
+                // Slightly longer pause after last plane so RAM is settled before REFRESH
+                steps.append(Step(data: w.0, type: w.1,
+                                  delayAfter: isLast ? 0.20 : 0.03, label: nil))
+            }
+
+            steps.append(Step(data: Data([0x05]), type: .withResponse,
+                              delayAfter: 1.0, label: "REFRESH"))
+        }
 
         print("total \(steps.count) steps, starting ...")
         for s in steps where s.label != nil {
@@ -744,6 +783,187 @@ class SendProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             }
         }
         next()
+    }
+
+    struct PartialPlan {
+        let rects: [Rect]
+        let steps: [Step]
+    }
+
+    struct Span {
+        let start: Int
+        let end: Int
+        let y: Int
+        let h: Int
+    }
+
+    func rawCommand(_ command: UInt8) -> Data {
+        Data([0x03, command])
+    }
+
+    func rawData(_ data: Data) -> Data {
+        var out = Data([0x04])
+        out.append(data)
+        return out
+    }
+
+    func u16LE(_ value: Int) -> Data {
+        Data([UInt8(value & 0xff), UInt8((value >> 8) & 0x01)])
+    }
+
+    func appendWindowSteps(_ steps: inout [Step], rect: Rect, label: String) {
+        let x0 = rect.xByte
+        let x1 = x0 + rect.byteWidth - 1
+        let y0 = rect.y
+        let y1 = rect.y + rect.h - 1
+        steps.append(Step(data: rawCommand(0x11), type: .withResponse,
+                          delayAfter: 0.03, label: "\(label) DATA_ENTRY"))
+        steps.append(Step(data: rawData(Data([0x03])), type: .withoutResponse,
+                          delayAfter: 0.03, label: nil))
+        steps.append(Step(data: rawCommand(0x44), type: .withResponse,
+                          delayAfter: 0.03, label: "\(label) X_WINDOW"))
+        steps.append(Step(data: rawData(Data([UInt8(x0), UInt8(x1)])), type: .withoutResponse,
+                          delayAfter: 0.03, label: nil))
+        steps.append(Step(data: rawCommand(0x45), type: .withResponse,
+                          delayAfter: 0.03, label: "\(label) Y_WINDOW"))
+        var yWindow = u16LE(y0)
+        yWindow.append(u16LE(y1))
+        steps.append(Step(data: rawData(yWindow), type: .withoutResponse,
+                          delayAfter: 0.03, label: nil))
+        steps.append(Step(data: rawCommand(0x4E), type: .withResponse,
+                          delayAfter: 0.03, label: "\(label) X_COUNTER"))
+        steps.append(Step(data: rawData(Data([UInt8(x0)])), type: .withoutResponse,
+                          delayAfter: 0.03, label: nil))
+        steps.append(Step(data: rawCommand(0x4F), type: .withResponse,
+                          delayAfter: 0.03, label: "\(label) Y_COUNTER"))
+        steps.append(Step(data: rawData(u16LE(y0)), type: .withoutResponse,
+                          delayAfter: 0.03, label: nil))
+    }
+
+    func extractPlane(_ plane: Data, frameWidth: Int, frameHeight: Int, rect: Rect) -> Data {
+        let rowBytes = frameWidth / 8
+        var out = Data()
+        for row in rect.y..<(rect.y + rect.h) {
+            let start = row * rowBytes + rect.xByte
+            out.append(plane.subdata(in: start..<(start + rect.byteWidth)))
+        }
+        return out
+    }
+
+    func appendPlaneDataSteps(_ steps: inout [Step], data: Data, label: String) {
+        let chunk = 233
+        var offset = 0
+        while offset < data.count {
+            let length = min(chunk, data.count - offset)
+            let part = data.subdata(in: offset..<(offset + length))
+            steps.append(Step(data: rawData(part), type: .withoutResponse,
+                              delayAfter: 0.03, label: "\(label) DATA \(length)B"))
+            offset += length
+        }
+    }
+
+    func diffRects(old: Frame, new: Frame) -> [Rect] {
+        guard old.w == new.w, old.h == new.h, old.w % 8 == 0 else { return [] }
+        let rowBytes = old.w / 8
+        var active: [Span] = []
+        var finished: [Span] = []
+
+        for y in 0..<old.h {
+            var runs: [(Int, Int)] = []
+            var x = 0
+            let offset = y * rowBytes
+            while x < rowBytes {
+                let dirty = old.black[offset + x] != new.black[offset + x]
+                    || old.red[offset + x] != new.red[offset + x]
+                if !dirty {
+                    x += 1
+                    continue
+                }
+                let start = x
+                x += 1
+                while x < rowBytes {
+                    if old.black[offset + x] == new.black[offset + x]
+                        && old.red[offset + x] == new.red[offset + x] { break }
+                    x += 1
+                }
+                runs.append((start, x))
+            }
+
+            var next: [Span] = []
+            var used = Set<Int>()
+            for run in runs {
+                if let match = active.enumerated().first(where: { idx, previous in
+                    !used.contains(idx) && run.0 < previous.end && previous.start < run.1
+                }) {
+                    let previous = match.element
+                    used.insert(match.offset)
+                    next.append(Span(start: min(run.0, previous.start),
+                                     end: max(run.1, previous.end),
+                                     y: previous.y,
+                                     h: y - previous.y + 1))
+                } else {
+                    next.append(Span(start: run.0, end: run.1, y: y, h: 1))
+                }
+            }
+            for (idx, previous) in active.enumerated() where !used.contains(idx) {
+                finished.append(previous)
+            }
+            active = next
+        }
+        finished.append(contentsOf: active)
+        return finished.sorted { $0.y == $1.y ? $0.start < $1.start : $0.y < $1.y }
+            .map { Rect(x: $0.start * 8, y: $0.y, w: ($0.end - $0.start) * 8, h: $0.h) }
+    }
+
+    func makePartialSteps(old: Frame, new: Frame, initModel: UInt8) -> PartialPlan? {
+        guard old.w == new.w, old.h == new.h, old.w % 8 == 0 else {
+            print("partial frame dimensions are incompatible; falling back to full refresh")
+            return nil
+        }
+        let rects = diffRects(old: old, new: new)
+        if rects.isEmpty { return PartialPlan(rects: [], steps: []) }
+
+        let redChanged = old.red != new.red
+        if redChanged && !allowRedPartial {
+            print("red plane changed; conservative full-refresh fallback (use --allow-red to test partial BWR)")
+            return nil
+        }
+        let area = rects.reduce(0) { $0 + $1.area }
+        let ratio = Double(area) / Double(new.w * new.h)
+        if ratio > partialMaxArea || rects.count > partialMaxRects {
+            print("partial dirty area/rectangle count exceeds limits; falling back to full refresh")
+            return nil
+        }
+
+        var steps: [Step] = [
+            Step(data: Data([0x01, initModel]), type: .withResponse,
+                 delayAfter: 0.20, label: "INIT model=0x\(String(format: "%02x", initModel))"),
+            Step(data: Data([0x31, 0x00, 0x00]), type: .withResponse,
+                 delayAfter: 0.05, label: "SET_SLOT slot=0"),
+        ]
+        for (index, rect) in rects.enumerated() {
+            let prefix = "RECT \(index + 1)/\(rects.count) \(rect.x),\(rect.y) \(rect.w)x\(rect.h)"
+            for (name, command, plane) in [("BW", UInt8(0x24), new.black), ("RED", UInt8(0x26), new.red)] {
+                let label = "\(prefix) \(name)"
+                appendWindowSteps(&steps, rect: rect, label: label)
+                steps.append(Step(data: rawCommand(command), type: .withResponse,
+                                  delayAfter: 0.03, label: "\(label) RAM"))
+                appendPlaneDataSteps(&steps,
+                                     data: extractPlane(plane, frameWidth: new.w, frameHeight: new.h, rect: rect),
+                                     label: label)
+            }
+        }
+        steps.append(Step(data: rawCommand(0x21), type: .withResponse,
+                          delayAfter: 0.03, label: "UPDATE_CTRL1"))
+        steps.append(Step(data: rawData(Data([0x80, 0x00])), type: .withoutResponse,
+                          delayAfter: 0.03, label: nil))
+        steps.append(Step(data: rawCommand(0x22), type: .withResponse,
+                          delayAfter: 0.03, label: "UPDATE_CTRL2 0xff"))
+        steps.append(Step(data: rawData(Data([0xff])), type: .withoutResponse,
+                          delayAfter: 0.03, label: nil))
+        steps.append(Step(data: rawCommand(0x20), type: .withResponse,
+                          delayAfter: 1.0, label: "MASTER_ACTIVATE"))
+        return PartialPlan(rects: rects, steps: steps)
     }
 
     // RLE compression matching epdiy.cn rle.js:
@@ -833,19 +1053,24 @@ class SendProbe: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         var red: Data
     }
 
-    func readFrame() -> Frame? {
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: frameFile)),
+    func readFrame(at path: String) -> Frame? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               data.count > 10,
               String(data: data[0..<7], encoding: .utf8) == "ZKEPD1\n" else {
             return nil
         }
         let w = Int(data[7]) | (Int(data[8]) << 8)
         let h = Int(data[9]) | (Int(data[10]) << 8)
+        guard w > 0, h > 0, w % 8 == 0 else { return nil }
         let planeBytes = (w * h) / 8
         guard data.count == 11 + planeBytes * 2 else { return nil }
         return Frame(w: w, h: h,
                      black: data.subdata(in: 11..<(11 + planeBytes)),
                      red: data.subdata(in: (11 + planeBytes)..<(11 + planeBytes * 2)))
+    }
+
+    func readFrame() -> Frame? {
+        readFrame(at: frameFile)
     }
 
     func save() {
@@ -1185,6 +1410,53 @@ case "send":
                 j = k
             }
             sp.initParam = Data(bytes)
+            i += 2
+        default:
+            print("unknown option \(args[i])")
+            exit(2)
+        }
+    }
+    sp.start()
+    RunLoop.current.run()
+case "partial":
+    // partial <UUID> <old-frame> <new-frame> [--allow-red] [--initparam <hex>]
+    guard args.count >= 5 else {
+        print("usage: \(args[0]) partial <UUID> <old-frame> <new-frame> [--allow-red] [--initparam <hex>]")
+        exit(2)
+    }
+    var sp = SendProbe(target: args[2], frameFile: args[4], oldFrameFile: args[3])
+    var i = 5
+    while i < args.count {
+        switch args[i] {
+        case "--allow-red":
+            sp.allowRedPartial = true
+            i += 1
+        case "--initparam":
+            guard i + 1 < args.count else { print("--initparam needs hex"); exit(2) }
+            let hex = args[i + 1].replacingOccurrences(of: " ", with: "")
+            guard hex.count % 2 == 0, !hex.isEmpty else { print("bad hex"); exit(2) }
+            var bytes: [UInt8] = []
+            var j = hex.startIndex
+            while j < hex.endIndex {
+                let k = hex.index(j, offsetBy: 2)
+                bytes.append(UInt8(hex[j..<k], radix: 16)!)
+                j = k
+            }
+            sp.initParam = Data(bytes)
+            i += 2
+        case "--max-area":
+            guard i + 1 < args.count, let value = Double(args[i + 1]), value > 0, value <= 1 else {
+                print("bad --max-area")
+                exit(2)
+            }
+            sp.partialMaxArea = value
+            i += 2
+        case "--max-rects":
+            guard i + 1 < args.count, let value = Int(args[i + 1]), value > 0 else {
+                print("bad --max-rects")
+                exit(2)
+            }
+            sp.partialMaxRects = value
             i += 2
         default:
             print("unknown option \(args[i])")

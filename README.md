@@ -9,7 +9,7 @@
 
 - 🔗 **纯 BLE 直连**：绕过官方云端/App，CoreBluetooth 直接推帧显示。
 - 🖼 **传任意图片** `img`，及 `INIT(model)+SET_SLOT+WRITE_IMG(0x30,RLE)+REFRESH(0x05)` 协议。
-- 📊 **AI 额度面板** `quotas`：codex / grok / kimi / opencode-go 四行实时额度 + 相对重置时间。
+- 📊 **AI 额度面板** `quotas`：codex / grok / kimi / opencode-go / Ollama Pro / Windsurf（Devin）六行实时额度 + 相对重置时间。
 - 🎨 **Apple 风格排版**：白底 tile + 单一红色强调；头部大号时间 + 农历/节气/干支；底部随机《道德经》一句 + 白话（本地缓存，无需联网）。
 - 🕘 **差量刷新 + 定时窗口**：数据没变自动跳过推送；`--start/--end` 限定活跃时段省电。
 - 🔬 **逆向工具链**：`scan` / `inspect` / `cmd` / `seq` / `server`（模拟官方 App）。
@@ -40,6 +40,7 @@ pip3 install pillow lunar_python
   - `cmd <UUID> <char> <hex>`：连接并写单条命令
   - `seq <UUID> <listen> <char:hex>...`：连接后顺序写入多条命令，监听响应
   - `send <UUID> <frame> [--init]`：连价签并按 EPD-nRF5 0x30 帧协议发送图像
+  - `partial <UUID> <old-frame> <new-frame>`：实验性 SSD1619 窗口局部刷新（失败/不适合时整屏回退）
   - `server <MAC> [frame]`：模拟官方 ZkongESL App（GATT Server + 广播），价签主动连接
 - `data/`：扫描与抓包结果
 
@@ -93,13 +94,31 @@ pip3 install pillow lunar_python
 ```bash
 ./epaper.sh img clock.png     # 传任意图片
 ./epaper.sh clock             # 显示当前时间(黑底白字)
-./epaper.sh quotas            # 拉取 codex/grok/kimi/opencode-go 额度并显示
+./epaper.sh quotas            # 拉取 codex/grok/kimi/opencode-go/Ollama Pro/Windsurf 额度并显示
 ./epaper.sh quotas --no-send  # 只生成 400×300 PNG + frame，不推 BLE
 ./epaper.sh quotas-loop 900   # 每 900 秒刷新额度面板（默认 15 分钟）
 ./epaper.sh quotas-loop 900 --start 09:00 --end 18:00   # 仅早九晚六刷新
 ./epaper.sh time              # 同步价签内部时钟
 ./epaper.sh scan              # 扫 BLE 设备
 ```
+
+### 布局设计器（在线拖拽）
+
+`design/index.html` 是一个**本地单文件**拖拽式排版工具（浏览器直接打开即可，无需安装）：
+
+- 400×300 画布，块（标题/时间、六个额度行、道德经）可**拖动移动**、右下角**缩放**、侧栏改**字体字号/颜色开关/边框**、增删块。
+- 用示例额度数据**实时渲染 BWR 预览**，所见即所得（像素严格黑/白/红三色）。
+- 「导出 JSON」把布局存为 `data/layout.json`；「导入 JSON」可回读或粘贴改过的配置。
+- 本地渲染时用 `--layout` 指定布局文件（缺省不传则用内置排版）：
+
+```bash
+# 设计页导出 data/layout.json 后：
+./epaper.sh quotas --layout data/layout.json
+python -m quotas --out-dir data/out --layout data/layout.json --send
+```
+
+布局 JSON 与 `tools/quotas/layout.py` 的 `render_layout()` 一一对应，块坐标即面板坐标。
+内置默认排版见 `tools/quotas/layout.py` 的 `DEFAULT_LAYOUT`（与 `quotas` 无参渲染完全一致，单测 `test_render_layout_default_matches_builtin` 保证）。
 
 ### AI 额度面板（quotas）
 
@@ -111,15 +130,64 @@ pip3 install pillow lunar_python
 | grok | `~/.grok/auth.json` | `GET cli-chat-proxy.grok.com/v1/billing?format=credits` |
 | kimi | `KIMI_API_KEY` / `KIMI_CODING_API_KEY`，或 `~/.kimi-code/credentials/kimi-code.json`（kimi-code 登录 OAuth） | `GET api.kimi.com/coding/v1/usages`；OAuth 过期走 `auth.kimi.com/api/oauth/token` 刷新 |
 | opencode-go | `~/.local/share/opencode/auth.json`；完整窗口需 `OPENCODE_GO_WORKSPACE_ID` + `OPENCODE_GO_AUTH_COOKIE` | 仪表盘 scrape 或 key 探测 |
+| ollama-pro | `OLLAMA_API_KEY`（也支持 `OLLAMA_PRO_API_KEY`） | `GET ollama.com/api/usage`；session/weekly `usage` 比例转换为剩余百分比 |
+| windsurf / Devin | Windsurf/Devin `state.vscdb`、`credentials.toml`，或 `DEVIN_BEARER_TOKEN` + `DEVIN_ORG` | Codeium SeatManagement 或 `app.devin.ai/.../billing/quota/usage`；日/周订阅额度剩余百分比 |
 
-单个服务失败只显示 error/unavailable，不会中断其它三行。
+单个服务失败只显示 error/unavailable，不会中断其它行。
+
+Ollama Pro 使用官方 API key 环境变量，启动额度刷新前设置一次即可：
+
+```bash
+export OLLAMA_API_KEY='<你的 Ollama API key>'
+./epaper.sh quotas
+```
+
+Windows PowerShell：
+
+```powershell
+$env:OLLAMA_API_KEY = '<你的 Ollama API key>'
+python -m quotas --out-dir data/out --send --bleprobe bleprobe.py
+```
+
+`/api/usage` 当前返回 session（约 5 小时）和 weekly（7 天）两个使用比例；若接口未返回精确重置时间，面板对应时间位置显示 `—`，不会猜测时间。
+
+Windsurf/Devin 订阅额度默认从桌面端的 `state.vscdb` 或 CLI `credentials.toml` 读取登录凭据，
+也可以设置 `WINDSURF_API_KEY`；Devin 网页额度接口则使用 `DEVIN_BEARER_TOKEN`（或
+`DEVIN_AUTHORIZATION`）配合 `DEVIN_ORG`。接口返回日额度和周额度的剩余百分比，面板分别显示为
+`day` 和 `wk`；本地缓存只在云端查询失败时使用。`DEVIN_API_KEY`（`apk_user_`）是 Devin
+会话 REST key，官方没有把自助订阅 quota 暴露在该 API 上，因此不会误发到额度接口。
 
 额度与时间均本地化显示：剩余额度统一百分比、重置时间显示为相对时间（`3天2时` / `35分`）；
-顶部显示农历 + 节气 + 天干地支；底部随机显示一句《道德经》（`tools/quotas/daodejing.json` 本地缓存）。
+顶部显示小字号农历 + 节气 + 天干地支，以及沪指/深成指/标普/纳指当日涨跌；行情取不到时使用上次本地缓存。
+底部随机显示一句《道德经》（`tools/quotas/daodejing.json` 本地缓存）。
 
-差量刷新：固件只支持整幅 WRITE_IMG + 全屏 REFRESH（0x30/0x05），无法做无闪烁的局部刷新。
-因此每次推送前会比较上一次的额度快照——数据没变就跳过 BLE 推送（不再每次全刷闪屏）；
+每次成功渲染会保存一份不含密钥的本地历史快照；有上次快照时，额度旁显示剩余百分比的 delta，
+例如 `Δ-2.0` 表示比上次刷新少 2 个百分点，首次刷新没有 delta。
+同时保存当天的刷新采样到 `epaper-quotas-history.json`，每个订阅右侧只显示一条总用量（已用百分比）折线图；
+曲线旁的 plan 数值与 delta 使用更大的字体，顶部另显示沪/深/标普/纳指的当日涨跌；当天第一次刷新只有一个点，跨到新的一天会自动清空旧曲线。
+
+差量刷新分两层：默认模式仍比较上一次额度快照，数据没变就跳过 BLE 推送；
 `./epaper.sh quotas --force` 可强制推送（比如想更新头部时间戳）。
+
+实验性局部刷新可显式开启：
+
+```bash
+# 先用上一帧建立基准；没有上一帧时自动整屏发送
+python -m quotas --out-dir data/out --send --partial --bleprobe bleprobe.py
+
+# 允许测试 BWR 红色平面局部刷新；需要确认具体面板波形可靠后再使用
+python -m quotas --out-dir data/out --send --partial --partial-red --bleprobe bleprobe.py
+```
+
+局部刷新状态保存在 `epaper-quotas-last-frame.bin`。发送前比较黑/红两个平面，
+将变化区域按 8 像素 X 边界切成窗口，通过 SSD1619 原始命令 `0x03/0x04` 写入，
+再用局部更新序列激活。变化面积过大、矩形过多或红色平面变化（未指定
+`--partial-red`）时自动走原有完整 `0x30/0x05` 刷新。当前 GR5513 固件是否允许
+原始命令透传、以及 BWR 面板是否支持可靠红色局部波形，仍需在实机上验证。
+
+Windows 本机任务 `AI Quota Epaper Refresh` 默认使用原有整屏刷新；局部刷新仅在
+手动显式传入 `--partial`（以及需要时 `--partial-red`）时启用。局部传输仍需在
+实机上验证，失败、变化面积过大或矩形过多时会回退完整刷新。
 
 定时刷新（二选一）：
 
@@ -173,6 +241,7 @@ swiftc -o build/bleprobe mac/BLEProbe.swift
 │       └── daodejing.json    # 道德经本地缓存
 ├── fonts/Roboto.ttf          # 英文字体（网络下载，随包附带）
 ├── launchd/                  # 定时刷新 LaunchAgent 模板
+├── design/index.html         # 在线拖拽式布局设计器（单文件，浏览器直接打开）
 ├── tests/                    # 单元测试
 └── data/                     # BLE 抓包/扫描（含真实 UUID/MAC，gitignored）
 ```

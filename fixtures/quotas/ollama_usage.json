@@ -1,0 +1,24 @@
+{
+  "limits": {
+    "session": {
+      "usage": 0.18,
+      "models": [
+        {"name": "gpt-oss:120b", "request_count": 3}
+      ]
+    },
+    "weekly": {
+      "usage": 0.09,
+      "models": []
+    }
+  },
+  "activity": {
+    "cost": "0.00000",
+    "period": {
+      "type": "last_4_weeks",
+      "starting_at": "2026-08-01T00:00:00Z",
+      "ending_at": "2026-08-29T00:00:00Z"
+    },
+    "models": []
+  },
+  "plan": "pro"
+}

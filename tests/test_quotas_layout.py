@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import struct
 import sys
 import tempfile
@@ -16,14 +17,18 @@ from quotas.layout import (  # noqa: E402
     H,
     BLACK,
     WHITE,
+    DEFAULT_LAYOUT,
     _balance_parts,
     _relative_reset,
+    _row_element_defaults,
     format_beijing,
     image_bwr_only,
     image_has_ink,
     image_has_red,
+    load_layout,
     load_quotes,
     pick_display_windows,
+    render_layout,
     render_quota_image,
     save_quota_png,
 )
@@ -100,6 +105,47 @@ def sample_records():
                 },
             ],
         ),
+        QuotaRecord(
+            name="ollama-pro",
+            status="ok",
+            used_percent=18.0,
+            remaining_percent=82.0,
+            windows=[
+                {
+                    "label": "5h",
+                    "used_percent": 18.0,
+                    "remaining_percent": 82.0,
+                    "window_seconds": 18000,
+                },
+                {
+                    "label": "week",
+                    "used_percent": 9.0,
+                    "remaining_percent": 91.0,
+                    "window_seconds": 604800,
+                },
+            ],
+        ),
+        QuotaRecord(
+            name="windsurf",
+            status="ok",
+            used_percent=24.0,
+            remaining_percent=76.0,
+            windows=[
+                {
+                    "label": "day",
+                    "display_label": "day",
+                    "used_percent": 24.0,
+                    "remaining_percent": 76.0,
+                    "window_seconds": 86400,
+                },
+                {
+                    "label": "week",
+                    "used_percent": 38.0,
+                    "remaining_percent": 62.0,
+                    "window_seconds": 604800,
+                },
+            ],
+        ),
     ]
 
 
@@ -145,6 +191,26 @@ class LayoutTests(unittest.TestCase):
         # red plane should still get red pixels from alert rows
         black, red = make_image.build_planes(img.convert("RGB"))
         self.assertNotEqual(red, b"\xff" * len(red), "red plane should have ink")
+
+    def test_market_ticker_is_rendered_between_calendar_and_time(self):
+        market = {
+            "items": [
+                {"key": "sh", "change_percent": 0.65},
+                {"key": "sz", "change_percent": 0.81},
+                {"key": "spx", "change_percent": -0.02},
+                {"key": "ndx", "change_percent": -0.08},
+            ]
+        }
+        plain = render_quota_image(sample_records())
+        ticker = render_quota_image(sample_records(), market=market)
+        plain_px, ticker_px = plain.load(), ticker.load()
+        changed = sum(
+            1
+            for y in range(0, 27)
+            for x in range(118, 325)
+            if plain_px[x, y] != ticker_px[x, y]
+        )
+        self.assertGreater(changed, 0, "market ticker should occupy the header middle")
 
     def test_balance_always_percent(self):
         # absolute remaining+limit must still render as a single percentage
@@ -209,16 +275,55 @@ class LayoutTests(unittest.TestCase):
 
         # Codex reset times are in the right side of the first service row.
         self.assertGreater(
-            ink(150, 400, 65, 90),
+            ink(150, 400, 50, 75),
             0,
             "codex reset time should be visible in the first row",
         )
         # opencode-go reset times remain visible in the fourth service row.
         self.assertGreater(
-            ink(150, 400, 170, 225),
+            ink(150, 400, 130, 170),
             0,
             "opencode-go reset line should stay visible in the fourth row",
         )
+
+    def test_ollama_row_is_rendered_in_the_fifth_slot(self):
+        img = render_quota_image(sample_records())
+        px = img.load()
+        row_ink = sum(
+            1
+            for y in range(167, 202)
+            for x in range(0, 400)
+            if px[x, y] != WHITE
+        )
+        self.assertGreater(row_ink, 0, "Ollama Pro should render in the fifth service row")
+
+    def test_today_total_usage_sparkline_is_rendered_once(self):
+        record = QuotaRecord(
+            name="ollama-pro",
+            status="ok",
+            windows=[
+                {"label": "5h", "remaining_percent": 90.0, "window_seconds": 18000},
+                {"label": "week", "remaining_percent": 80.0, "window_seconds": 604800},
+            ],
+        )
+        history = {
+            "ollama-pro": {
+                "total": [1.0, 2.0, 5.0, 4.0],
+            }
+        }
+        plain = render_quota_image([record])
+        plotted = render_quota_image([record], history=history)
+        plain_px = plain.load()
+        plotted_px = plotted.load()
+        # The single total chart sits at the far right of the fifth row; no
+        # text occupies this rectangle in the plain render.
+        changed = sum(
+            1
+            for y in range(180, 202)
+            for x in range(282, 396)
+            if plain_px[x, y] != plotted_px[x, y]
+        )
+        self.assertGreater(changed, 0, "today total usage history should draw one sparkline")
 
     def test_blank_detection(self):
         from PIL import Image
@@ -251,6 +356,131 @@ class LayoutTests(unittest.TestCase):
             self.assertEqual((w, h), (400, 300))
             planes = raw[11:]
             self.assertNotEqual(planes, b"\xff" * len(planes))
+
+    def test_render_layout_default_matches_builtin(self):
+        """DEFAULT_LAYOUT + render_layout should equal the built-in dashboard."""
+        from unittest.mock import patch
+
+        fixed = {"q": "上善若水", "e": "最高的善，就像水一样"}
+        with patch("quotas.layout.random_quote", return_value=fixed):
+            img_default = render_layout(sample_records(), DEFAULT_LAYOUT)
+            img_builtin = render_quota_image(sample_records())
+
+        def strip_border_rows(img):
+            """Whiten 1px separator lines so block-border vs builtin-border
+            conventions (off-by-one) don't count as content differences."""
+            px = img.load()
+            for y in range(H):
+                colors = {px[x, y] for x in range(W)}
+                if len(colors) == 1:
+                    for x in range(W):
+                        px[x, y] = WHITE
+            return img
+
+        a = strip_border_rows(img_default.copy())
+        b = strip_border_rows(img_builtin.copy())
+        self.assertEqual(a.size, (W, H))
+        self.assertEqual(list(a.getdata()), list(b.getdata()))
+
+    def test_render_layout_custom_block(self):
+        """Moving a row block renders ink at the new position."""
+        layout = {
+            "version": 1,
+            "canvas": {"w": W, "h": H},
+            "blocks": [
+                {
+                    "id": "row-codex",
+                    "type": "row",
+                    "service": "codex",
+                    "x": 0,
+                    "y": 100,
+                    "w": W,
+                    "h": 60,
+                    "border": True,
+                }
+            ],
+        }
+        img = render_layout(sample_records(), layout)
+        self.assertEqual(img.size, (W, H))
+        self.assertTrue(image_bwr_only(img))
+        px = img.load()
+        # Name/value ink should appear inside the moved block (y 100..160)
+        row_ink = sum(
+            1
+            for y in range(100, 160)
+            for x in range(0, 400)
+            if px[x, y] != WHITE
+        )
+        self.assertGreater(row_ink, 0, "moved row block should render ink")
+
+    def test_render_layout_elements_defaults_match_builtin(self):
+        """Row blocks carrying the exported elements schema equal the built-in."""
+        from unittest.mock import patch
+
+        fixed = {"q": "上善若水", "e": "最高的善，就像水一样"}
+        layout = json.loads(json.dumps(DEFAULT_LAYOUT))
+        for b in layout["blocks"]:
+            if b["type"] == "row":
+                b["elements"] = _row_element_defaults()
+        with patch("quotas.layout.random_quote", return_value=fixed):
+            img = render_layout(sample_records(), layout)
+            img_builtin = render_quota_image(sample_records())
+
+        def strip_border_rows(img):
+            px = img.load()
+            for y in range(H):
+                colors = {px[x, y] for x in range(W)}
+                if len(colors) == 1:
+                    for x in range(W):
+                        px[x, y] = WHITE
+            return img
+
+        a = strip_border_rows(img.copy())
+        b = strip_border_rows(img_builtin.copy())
+        self.assertEqual(list(a.getdata()), list(b.getdata()))
+
+    def test_render_layout_elements_per_element_tweak(self):
+        """Hidden columns / moved logo change the rendered output."""
+        layout = {
+            "version": 1,
+            "canvas": {"w": W, "h": H},
+            "blocks": [
+                {
+                    "id": "row-codex",
+                    "type": "row",
+                    "service": "codex",
+                    "x": 0,
+                    "y": 46,
+                    "w": W,
+                    "h": 49,
+                    "border": True,
+                    "elements": _row_element_defaults(),
+                }
+            ],
+        }
+        base = render_layout(sample_records(), layout)
+        layout["blocks"][0]["elements"]["col2"]["show"] = False
+        layout["blocks"][0]["elements"]["logo"]["x"] = 40
+        layout["blocks"][0]["elements"]["name"]["font"] = 24
+        tweaked = render_layout(sample_records(), layout)
+        self.assertNotEqual(list(base.getdata()), list(tweaked.getdata()))
+        self.assertTrue(image_bwr_only(tweaked))
+        px = tweaked.load()
+        # Bigger name font should leave ink in a row that had none before
+        self.assertTrue(any(px[x, y] != WHITE for y in range(70, 80) for x in range(0, 200)))
+
+    def test_load_layout_roundtrip(self):
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "layout.json"
+            p.write_text(json.dumps(DEFAULT_LAYOUT), encoding="utf-8")
+            loaded = load_layout(p)
+            self.assertEqual(loaded["blocks"][0]["type"], "header")
+            self.assertEqual(len(loaded["blocks"]), len(DEFAULT_LAYOUT["blocks"]))
+            self.assertIsNone(load_layout(Path(td) / "nope.json"))
+            self.assertIsNone(load_layout(None))
 
 
 if __name__ == "__main__":

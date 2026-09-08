@@ -1,4 +1,4 @@
-"""400×300 BWR (black/white/red) high-contrast layout for four quota rows."""
+"""400×300 BWR (black/white/red) high-contrast layout for quota rows."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .models import QuotaRecord
+from .models import SERVICE_NAMES, QuotaRecord
 
 W, H = 400, 300
 
@@ -26,6 +26,16 @@ BEIJING = ZoneInfo("Asia/Shanghai")
 
 # Canonical short / long windows shown on each row
 WINDOW_ORDER = ("5h", "week")
+
+# Keep machine-readable service ids in QuotaRecord while using the more
+# natural product label on the small display.
+SERVICE_DISPLAY_NAMES = {
+    "opencode-go": "opencode",
+    "ollama-pro": "ollama pro",
+    "windsurf": "windsurf",
+}
+MARKET_ORDER = ("sh", "sz", "spx", "ndx")
+MARKET_LABELS = {"sh": "沪", "sz": "深", "spx": "标普", "ndx": "纳"}
 
 
 def beijing_now(now: Optional[datetime] = None) -> datetime:
@@ -169,6 +179,11 @@ def _classify_window_kind(w: dict[str, Any]) -> Optional[str]:
             pass
     if any(k in label for k in ("rolling", "5h", "5-hour", "five hour", "secondary")):
         return "5h"
+    if any(k in label for k in ("daily", "day", "24h")):
+        # Windsurf exposes a daily bucket rather than the 5h bucket used by
+        # other providers. It occupies the same aligned short-column slot;
+        # the renderer preserves the truthful "day" label separately.
+        return "5h"
     if any(k in label for k in ("weekly", "week", "primary")):
         # "primary" is often the weekly codex window when window_seconds missing
         if "primary" in label and secs is not None:
@@ -205,6 +220,7 @@ def pick_display_windows(rec: QuotaRecord) -> list[dict[str, Any]]:
                     "label": "week",
                     "used_percent": rec.used_percent,
                     "remaining_percent": rec.remaining_percent,
+                    "delta_percent": rec.delta_percent,
                     "remaining": rec.remaining,
                     "limit": rec.limit,
                     "reset_at": rec.reset_at,
@@ -216,6 +232,7 @@ def pick_display_windows(rec: QuotaRecord) -> list[dict[str, Any]]:
                 "label": "week",
                 "used_percent": rec.used_percent,
                 "remaining_percent": rec.remaining_percent,
+                "delta_percent": rec.delta_percent,
                 "remaining": rec.remaining,
                 "limit": rec.limit,
                 "reset_at": rec.reset_at,
@@ -232,6 +249,7 @@ def pick_display_windows(rec: QuotaRecord) -> list[dict[str, Any]]:
             "label": "week",
             "used_percent": rec.used_percent,
             "remaining_percent": rec.remaining_percent,
+            "delta_percent": rec.delta_percent,
             "remaining": rec.remaining,
             "limit": rec.limit,
             "reset_at": rec.reset_at,
@@ -259,6 +277,126 @@ def _balance_parts(w: dict[str, Any]) -> list[tuple[str, tuple[int, int, int]]]:
     if used_pct is not None:
         return [(f"{max(0.0, 100.0 - used_pct):.0f}%", RED)]
     return [("—", BLACK)]
+
+
+def _delta_value(w: dict[str, Any]) -> Optional[float]:
+    """Return a finite, display-friendly remaining-percent delta."""
+    try:
+        value = float(w.get("delta_percent"))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value):
+        return None
+    # Avoid showing tiny floating-point noise from API calculations.
+    return 0.0 if abs(value) < 0.05 else value
+
+
+def _delta_text(w: dict[str, Any]) -> Optional[str]:
+    value = _delta_value(w)
+    if value is None:
+        return None
+    sign = "+" if value > 0 else ""
+    return f"Δ{sign}{value:.1f}"
+
+
+def _history_values(history: Any, kind: str) -> list[float]:
+    """Read a validated per-service usage series."""
+    if not isinstance(history, dict):
+        return []
+    values = history.get(kind)
+    if isinstance(values, dict):
+        values = values.get("values")
+    if not isinstance(values, (list, tuple)):
+        return []
+    out: list[float] = []
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            out.append(max(0.0, min(100.0, number)))
+    return out
+
+
+def _draw_sparkline(
+    d,
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    values: Any,
+) -> None:
+    """Draw a tiny today's-used-percent trend with a red current endpoint."""
+    points_values = values if isinstance(values, (list, tuple)) else []
+    clean: list[float] = []
+    for value in points_values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(number):
+            clean.append(max(0.0, min(100.0, number)))
+    if not clean or w < 3 or h < 3:
+        return
+
+    low, high = min(clean), max(clean)
+    span = high - low
+    if span < 1.0:
+        center = (low + high) / 2.0
+        low = max(0.0, center - 5.0)
+        high = min(100.0, center + 5.0)
+    else:
+        padding = max(1.0, span * 0.15)
+        low = max(0.0, low - padding)
+        high = min(100.0, high + padding)
+    if high <= low:
+        high = low + 1.0
+
+    if len(clean) == 1:
+        px = x + w // 2
+        py = y + h // 2
+        d.ellipse([px - 2, py - 2, px + 2, py + 2], fill=RED)
+        return
+
+    points = []
+    for index, value in enumerate(clean):
+        px = x + (w - 1) * index / (len(clean) - 1)
+        py = y + h - 1 - (value - low) / (high - low) * (h - 1)
+        points.append((px, py))
+    d.line(points, fill=BLACK, width=2)
+    px, py = points[-1]
+    d.ellipse([px - 2, py - 2, px + 2, py + 2], fill=RED)
+
+
+def _draw_total_usage_chart(
+    d,
+    x0: int,
+    y0: int,
+    config: dict[str, Any],
+    history: dict[str, Any],
+) -> None:
+    """Draw one clearly labelled total-usage trend for a service row."""
+    if not config.get("show", True):
+        return
+    label = str(config.get("label") or "总用量")
+    d.text(
+        (
+            x0 + int(config.get("label_x", config.get("x", 282))),
+            y0 + int(config.get("label_y", 0)),
+        ),
+        label,
+        fill=BLACK,
+        font=_cjk_font(int(config.get("label_font", 9))),
+    )
+    _draw_sparkline(
+        d,
+        x0 + int(config.get("x", 282)),
+        y0 + int(config.get("y", 13)),
+        int(config.get("w", 110)),
+        int(config.get("h", 19)),
+        _history_values(history, "total"),
+    )
 
 
 def _parse_dt(value: Any) -> Optional[datetime]:
@@ -464,7 +602,8 @@ def draw_logo(d, x: float, y: float, size: float, kind: str, ink, bg) -> None:
 
     Simplified shapes (BWR panel has no grays or midtones), drawn in the tile's
     ink colour: codex → OpenAI-style hexagon knot, grok → xAI "X",
-    kimi → crescent moon, opencode-go → terminal prompt chevron.
+    kimi → crescent moon, opencode-go → terminal prompt chevron,
+    ollama-pro → llama head, windsurf → W mark.
     """
     h = size / 2.0
     if kind == "codex":
@@ -483,6 +622,31 @@ def draw_logo(d, x: float, y: float, size: float, kind: str, ink, bg) -> None:
             [(x - h * 0.6, y - h * 0.72), (x + h * 0.55, y), (x - h * 0.6, y + h * 0.72)],
             fill=ink,
             width=w,
+            joint="curve",
+        )
+    elif kind == "ollama":
+        # Small geometric llama mark that survives the panel's BWR palette.
+        d.ellipse([x - h * 0.62, y - h * 0.58, x + h * 0.62, y + h * 0.78], fill=ink)
+        d.polygon(
+            [(x - h * 0.55, y - h * 0.45), (x - h * 0.9, y - h * 0.95), (x - h * 0.18, y - h * 0.7)],
+            fill=ink,
+        )
+        d.polygon(
+            [(x + h * 0.55, y - h * 0.45), (x + h * 0.9, y - h * 0.95), (x + h * 0.18, y - h * 0.7)],
+            fill=ink,
+        )
+    elif kind == "windsurf":
+        line_w = max(1.5, size * 0.15)
+        d.line(
+            [
+                (x - h * 0.9, y - h * 0.45),
+                (x - h * 0.35, y + h * 0.55),
+                (x, y - h * 0.1),
+                (x + h * 0.35, y + h * 0.55),
+                (x + h * 0.9, y - h * 0.45),
+            ],
+            fill=ink,
+            width=line_w,
             joint="curve",
         )
 
@@ -544,15 +708,18 @@ def render_quota_image(
     *,
     title: str = "AI Quotas",
     now: Optional[datetime] = None,
+    history: Optional[dict[str, dict[str, Any]]] = None,
+    market: Optional[dict[str, Any]] = None,
 ) -> Image.Image:
     """Render a compact, high-contrast BWR quota dashboard.
 
-    The four services use full-width rows.  A 400 px e-paper panel is much
-    easier to read this way than as four 200 px cards: names never collide
+    The services use full-width rows.  A 400 px e-paper panel is much
+    easier to read this way than as narrow cards: names never collide
     with values, error details do not truncate as aggressively, and the
     important percentages can stay large.
     """
     recs = list(records)
+    history = history or {}
     # Render at the panel's native resolution. FreeType's hinting can then snap
     # stems to the actual pixel grid. Supersampling + LANCZOS followed by BWR
     # thresholding creates broken gray edge fragments on a physical 1-bit
@@ -563,28 +730,22 @@ def render_quota_image(
 
     bj = beijing_now(now)
 
-    # Font sizes are physical display pixels so font hinting matches the panel.
-    header_title_f = _font(13 * S, bold=True)
-    header_time_f = _font(22 * S, bold=True)
-    header_cjk_f = _cjk_font(15 * S)
-    name_f = _font(17 * S, bold=True)
-    sub_f = _font(10 * S, bold=True)
-    hero_f = _font(30 * S, bold=True)
-    latin_f = _font(13 * S, bold=True)
-    balance_f = _font(22 * S, bold=True)
-    cjk_detail_f = _cjk_font(13 * S)
-    alert_f = _font(16 * S, bold=True)
-    alert_detail_f = _font(12 * S, bold=True)
+# Font sizes are physical display pixels so font hinting matches the panel.
+    header_time_f = _font(14 * S, bold=True)
+    header_cjk_f = _cjk_font(9 * S)
     quote_f = _cjk_font(19 * S)
     quote_explain_f = _cjk_font(12 * S, bold=True)
 
-    # --- Header: title + clock on the first line, Chinese calendar below. ---
-    header_h = 46
-    d.text((10, 5), title.upper(), fill=BLACK, font=header_title_f)
+    # --- Header: compact Chinese calendar, market ticker, and clock. ---
+    # The title is redundant on a dedicated quota tag. Keep the calendar and
+    # timestamp on one compact line so the sixth provider still gets a readable
+    # row below it.
+    header_h = 27
     time_str = bj.strftime("%m-%d %H:%M")
     tw = d.textbbox((0, 0), time_str, font=header_time_f)[2]
     d.text((W - 10 - tw, 3), time_str, fill=BLACK, font=header_time_f)
-    d.text((10, 28), china_calendar_line(now), fill=BLACK, font=header_cjk_f)
+    _draw_market_header(d, market, 0, 5, W, W - 10 - tw, 9)
+    d.text((10, 3), china_calendar_line(now), fill=BLACK, font=header_cjk_f)
     d.line([(0, header_h - 1), (W, header_h - 1)], fill=BLACK, width=1)
 
     # --- Bottom bar: quote + explanation, compact and always on-canvas. ---
@@ -606,6 +767,7 @@ def render_quota_image(
     quote_content_h = 7 + q_line_h * len(q_lines) + 4 + e_line_h * len(e_lines) + 7
     # Reserve a compact lower band; full-width service rows use the recovered
     # height for larger, sturdier glyphs.
+    # Six provider rows need a compact but still legible lower band.
     quote_h = max(58, quote_content_h)
     quote_y0 = H - quote_h
     if q_lines:
@@ -620,11 +782,10 @@ def render_quota_image(
             y += e_line_h
     d.line([(0, quote_y0 - 1), (W, quote_y0 - 1)], fill=BLACK, width=1)
 
-    # --- Service area: four full-width rows. ---
-    rows = ("codex", "grok", "kimi", "opencode-go")
+# --- Service area: one full-width row per provider. ---
+    rows = SERVICE_NAMES
     top = header_h
     row_h = (quote_y0 - top) // len(rows)
-    kind_label = {"5h": "5h", "week": "wk"}
     records_by_name = {r.name: r for r in recs}
 
     for ri, name in enumerate(rows):
@@ -632,49 +793,7 @@ def render_quota_image(
         if ri > 0:
             d.line([(0, y0), (W, y0)], fill=BLACK, width=1)
         rec = records_by_name.get(name) or QuotaRecord(name=name, status="unavailable", detail="missing")
-        alert = _is_alert(rec)
-        logo_kind = {"opencode-go": "opencode"}.get(name, name)
-        cy = y0 + row_h / 2
-        draw_logo(d, 16, cy, 17.0, logo_kind, BLACK, WHITE)
-        d.text((29, y0 + 4), name, fill=(RED if alert else BLACK), font=name_f)
-
-        # Use the previously empty lower-left corner for a compact plan/source
-        # label. This makes the row denser without competing with quota values.
-        detail = (rec.detail or "").lower()
-        if name == "codex":
-            subtitle = "PLUS · OFFICIAL" if "plus" in detail else "OFFICIAL"
-        elif name == "grok":
-            subtitle = "WEEKLY" if "weekly" in detail else "GROK BUILD"
-        elif name == "kimi":
-            subtitle = "CODING PLAN"
-        else:
-            subtitle = "GO PLAN"
-        d.text((29, y0 + 28), subtitle, fill=BLACK, font=sub_f)
-
-        if rec.status != "ok":
-            d.text((151, y0 + 4), rec.status.upper(), fill=RED, font=alert_f)
-            msg = rec.detail or "no details"
-            if len(msg) > 36:
-                msg = msg[:33] + "..."
-            d.text((151, y0 + 27), msg, fill=BLACK, font=alert_detail_f)
-            continue
-
-        windows = [w for w in pick_display_windows(rec) if not w.get("missing")]
-        if len(windows) == 1:
-            w = windows[0]
-            tag = kind_label.get(str(w.get("kind") or "?"), "?")
-            hero_txt = "".join(t for t, _ in _balance_parts(w))
-            hero_w = d.textbbox((0, 0), hero_txt, font=hero_f)[2]
-            d.text((W - 12 - hero_w, y0 - 4), hero_txt, fill=RED, font=hero_f)
-            d.text((151, y0 + 30), f"{tag}  {_relative_reset(w, now)}", fill=BLACK, font=cjk_detail_f)
-        else:
-            # Fixed columns make both windows instantly scannable and keep
-            # their reset time directly below the corresponding percentage.
-            for x, w in zip((151, 277), windows[:2]):
-                tag = kind_label.get(str(w.get("kind") or "?"), "?")
-                d.text((x, y0 + 2), tag, fill=BLACK, font=latin_f)
-                _draw_runs(d, x + 25, y0, [(t, c, balance_f) for t, c in _balance_parts(w)], balance_f)
-                d.text((x, y0 + 30), _relative_reset(w, now), fill=BLACK, font=cjk_detail_f)
+        _draw_service_row(d, 0, y0, W, row_h, rec, now, history=history.get(name))
 
     # Snap FreeType's native-resolution antialiasing to the three panel inks.
     return quantize_bwr(img)
@@ -731,9 +850,575 @@ def image_has_red(img: Image.Image) -> bool:
     return False
 
 
-def save_quota_png(records: Iterable[QuotaRecord], path: str | Path) -> Path:
+def save_quota_png(
+    records: Iterable[QuotaRecord],
+    path: str | Path,
+    history: Optional[dict[str, dict[str, Any]]] = None,
+    market: Optional[dict[str, Any]] = None,
+) -> Path:
     path = Path(path)
-    img = render_quota_image(records)
+    img = render_quota_image(records, history=history, market=market)
     path.parent.mkdir(parents=True, exist_ok=True)
     img.save(path)
     return path
+
+
+# ---------------------------------------------------------------------------
+# Config-driven layout (design tool → JSON → this renderer)
+# ---------------------------------------------------------------------------
+
+def _row_element_defaults() -> dict[str, Any]:
+    """Default per-element config for a service row (matches render_quota_image).
+
+    Each row's inner elements (logo / name / subtitle / balance columns / hero /
+    error state) are individually positionable via a row block's ``elements``
+    dict; a missing key falls back to these values.
+    """
+    return {
+        "logo": {"show": True, "x": 9, "cy": 0.5, "size": 11},
+        "name": {"show": True, "x": 22, "y": 4, "font": 12, "color": "auto"},
+        "subtitle": {"show": False, "x": 29, "y": 22, "font": 8, "color": "black"},
+        "status": {"show": True, "x": 101, "y": 2, "font": 12},
+        "status_msg": {"show": True, "x": 101, "y": 21, "font": 9},
+        # Keep the legacy single-window hero opt-in only. The default fixed
+        # columns keep a provider's value/reset vertically aligned with all
+        # other rows, including providers that only expose the weekly window.
+        "hero": {"show": False, "right": 12, "y": -2, "font": 26},
+        "chart": {
+            "show": True, "label": "总用量", "label_x": 282, "label_y": 0,
+            "label_font": 9, "x": 282, "y": 13, "w": 110, "h": 19,
+        },
+        "col1": {
+            "show": True, "x": 95, "tag_y": 0, "tag_font": 10,
+            "balance_dx": 13, "balance_y": 0, "balance_font": 20,
+            "delta_dx": 3, "delta_y": 5, "delta_font": 8,
+            "detail_y": 28, "detail_font": 9,
+        },
+        "col2": {
+            "show": True, "x": 195, "tag_y": 0, "tag_font": 10,
+            "balance_dx": 13, "balance_y": 0, "balance_font": 20,
+            "delta_dx": 3, "delta_y": 5, "delta_font": 8,
+            "detail_y": 28, "detail_font": 9,
+        },
+    }
+
+
+def _row_elements_for_block(b: dict[str, Any]) -> dict[str, Any]:
+    """Merge a row block's ``elements`` sub-config over the defaults.
+
+    Legacy flat keys (name_font, sub_font, ...) are honored when ``elements``
+    is absent, so older exported layouts keep working.
+    """
+    base = _row_element_defaults()
+    el = b.get("elements") or {}
+    legacy = {
+        "name": {"x": 22, "y": 4, "font": b.get("name_font")},
+        "subtitle": {"x": 29, "y": 22, "font": b.get("sub_font")},
+        "hero": {"right": 12, "y": -2, "font": b.get("hero_font")},
+        "col1": {"balance_font": b.get("balance_font"), "tag_font": b.get("latin_font"), "detail_font": b.get("detail_font")},
+        "col2": {"balance_font": b.get("balance_font"), "tag_font": b.get("latin_font"), "detail_font": b.get("detail_font")},
+        "logo": {"size": b.get("logo_size")},
+    }
+    out = {}
+    for key, defaults in base.items():
+        sub = dict(defaults)
+        if isinstance(el.get(key), dict):
+            sub.update({k: v for k, v in el[key].items() if v is not None})
+        for k, v in (legacy.get(key) or {}).items():
+            if v is not None:
+                sub[k] = v
+        out[key] = sub
+    return out
+
+
+def _draw_service_row(
+    d,
+    x0: int,
+    y0: int,
+    w: int,
+    h: int,
+    rec: QuotaRecord,
+    now: Optional[datetime],
+    el: Optional[dict[str, Any]] = None,
+    history: Optional[dict[str, Any]] = None,
+) -> None:
+    """Draw one service row inside the rect (x0,y0,w,h).
+
+    ``el`` is the merged per-element config (see _row_element_defaults); when
+    omitted the built-in dashboard defaults are used.
+    """
+    if el is None:
+        el = _row_element_defaults()
+    history = history or {}
+    kind_label = {"5h": "5h", "week": "wk"}
+    alert = _is_alert(rec)
+    logo = el["logo"]
+    name_el = el["name"]
+    sub_el = el["subtitle"]
+    hero = el["hero"]
+
+    def _el_color(sub: dict[str, Any]) -> tuple[int, int, int]:
+        c = str(sub.get("color") or "auto")
+        if c == "red":
+            return RED
+        if c == "black":
+            return BLACK
+        return RED if alert else BLACK
+
+    if logo.get("show", True):
+        cy = y0 + float(logo.get("cy", 0.5)) * h
+        logo_kind = {
+            "opencode-go": "opencode",
+            "ollama-pro": "ollama",
+            "windsurf": "windsurf",
+        }.get(rec.name, rec.name)
+        draw_logo(d, x0 + int(logo.get("x", 16)), cy, float(logo.get("size", 17)), logo_kind, BLACK, WHITE)
+    if name_el.get("show", True):
+        d.text(
+            (x0 + int(name_el.get("x", 29)), y0 + int(name_el.get("y", 4))),
+            SERVICE_DISPLAY_NAMES.get(rec.name, rec.name),
+            fill=_el_color(name_el),
+            font=_font(int(name_el.get("font", 17)), bold=True),
+        )
+
+    detail = (rec.detail or "").lower()
+    if rec.name == "codex":
+        subtitle = "PLUS · OFFICIAL" if "plus" in detail else "OFFICIAL"
+    elif rec.name == "grok":
+        subtitle = "WEEKLY" if "weekly" in detail else "GROK BUILD"
+    elif rec.name == "kimi":
+        subtitle = "CODING PLAN"
+    elif rec.name == "ollama-pro":
+        subtitle = "PRO · CLOUD"
+    elif rec.name == "windsurf":
+        subtitle = "WINDSURF"
+    else:
+        subtitle = "GO PLAN"
+    if sub_el.get("show", True):
+        d.text(
+            (x0 + int(sub_el.get("x", 29)), y0 + int(sub_el.get("y", 28))),
+            subtitle,
+            fill=_el_color(sub_el),
+            font=_font(int(sub_el.get("font", 10)), bold=True),
+        )
+
+    if rec.status != "ok":
+        st = el["status"]
+        if st.get("show", True):
+            d.text(
+                (x0 + int(st.get("x", 151)), y0 + int(st.get("y", 4))),
+                rec.status.upper(),
+                fill=RED,
+                font=_font(int(st.get("font", 16)), bold=True),
+            )
+        sm = el["status_msg"]
+        if sm.get("show", True):
+            msg = rec.detail or "no details"
+            if len(msg) > 36:
+                msg = msg[:33] + "..."
+            d.text(
+                (x0 + int(sm.get("x", 151)), y0 + int(sm.get("y", 27))),
+                msg,
+                fill=BLACK,
+                font=_font(int(sm.get("font", 12)), bold=True),
+            )
+        return
+
+    slots = pick_display_windows(rec)
+    real_windows = [wd for wd in slots if not wd.get("missing")]
+    if len(real_windows) == 1 and hero.get("show", False):
+        wd = real_windows[0]
+        tag = str(wd.get("display_label") or kind_label.get(str(wd.get("kind") or "?"), "?"))
+        if hero.get("show", True):
+            hero_txt = "".join(t for t, _ in _balance_parts(wd))
+            hero_f = _font(int(hero.get("font", 30)), bold=True)
+            hero_w = d.textbbox((0, 0), hero_txt, font=hero_f)[2]
+            hero_x = x0 + w - int(hero.get("right", 12)) - hero_w
+            hero_y = y0 + int(hero.get("y", -4))
+            d.text(
+                (hero_x, hero_y),
+                hero_txt,
+                fill=RED,
+                font=hero_f,
+            )
+            delta = _delta_text(wd)
+            if delta:
+                delta_f = _font(9, bold=True)
+                delta_w = d.textbbox((0, 0), delta, font=delta_f)[2]
+                d.text(
+                    (hero_x - delta_w - 4, hero_y + 7),
+                    delta,
+                    fill=RED if (_delta_value(wd) or 0) < 0 else BLACK,
+                    font=delta_f,
+                )
+        c1 = el["col1"]
+        if c1.get("show", True):
+            d.text(
+                (x0 + int(c1.get("x", 151)), y0 + int(c1.get("detail_y", 30))),
+                f"{tag}  {_relative_reset(wd, now)}",
+                fill=BLACK,
+                font=_cjk_font(int(c1.get("detail_font", 13))),
+            )
+    else:
+        # Always draw both canonical slots, including a missing placeholder.
+        # This keeps the weekly value and reset line in the same x-column as
+        # the corresponding values on every other provider row.
+        for col_key, wd in zip(("col1", "col2"), slots):
+            col = el[col_key]
+            if not col.get("show", True):
+                continue
+            tag = str(wd.get("display_label") or kind_label.get(str(wd.get("kind") or "?"), "?"))
+            cx = x0 + int(col.get("x", 151))
+            d.text(
+                (cx, y0 + int(col.get("tag_y", 2))),
+                tag,
+                fill=BLACK,
+                font=_font(int(col.get("tag_font", 13)), bold=True),
+            )
+            balance_f = _font(int(col.get("balance_font", 22)), bold=True)
+            balance_end = _draw_runs(
+                d,
+                cx + int(col.get("balance_dx", 25)),
+                y0 + int(col.get("balance_y", 0)),
+                [(t, c, balance_f) for t, c in _balance_parts(wd)],
+                balance_f,
+            )
+            delta = _delta_text(wd)
+            if delta:
+                delta_f = _font(int(col.get("delta_font", 9)), bold=True)
+                d.text(
+                    (
+                        balance_end + int(col.get("delta_dx", 3)),
+                        y0 + int(col.get("delta_y", 4)),
+                    ),
+                    delta,
+                    fill=RED if (_delta_value(wd) or 0) < 0 else BLACK,
+                    font=delta_f,
+                )
+            d.text(
+                (cx, y0 + int(col.get("detail_y", 30))),
+                _relative_reset(wd, now),
+                fill=BLACK,
+                font=_cjk_font(int(col.get("detail_font", 13))),
+            )
+
+    if rec.status == "ok":
+        _draw_total_usage_chart(d, x0, y0, el["chart"], history)
+
+
+def _market_runs(market: Optional[dict[str, Any]]) -> list[tuple[str, tuple[int, int, int]]]:
+    """Build compact header runs for China/US index daily changes."""
+    if not isinstance(market, dict):
+        return []
+    by_key = {
+        str(item.get("key")): item
+        for item in (market.get("items") or [])
+        if isinstance(item, dict) and item.get("key")
+    }
+    runs: list[tuple[str, tuple[int, int, int]]] = []
+    for index, key in enumerate(MARKET_ORDER):
+        item = by_key.get(key)
+        if item is None:
+            continue
+        try:
+            change = float(item.get("change_percent"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(change):
+            continue
+        if runs:
+            runs.append(("  |  " if key == "spx" else "  ", BLACK))
+        sign = "+" if change >= 0 else ""
+        label = MARKET_LABELS.get(key, str(item.get("label") or key))
+        runs.append((f"{label}{sign}{change:.1f}%", RED if change > 0 else BLACK))
+    return runs
+
+
+def _draw_market_header(
+    d,
+    market: Optional[dict[str, Any]],
+    x: int,
+    y: int,
+    w: int,
+    time_x: int,
+    font_size: int = 9,
+) -> None:
+    runs = _market_runs(market)
+    if not runs:
+        return
+    font = _cjk_font(font_size)
+    market_width = sum(d.textbbox((0, 0), text, font=font)[2] for text, _ in runs)
+    left = x + 126
+    right = time_x - 8
+    available = right - left
+    if market_width > available:
+        font = _cjk_font(max(8, font_size - 1))
+        market_width = sum(d.textbbox((0, 0), text, font=font)[2] for text, _ in runs)
+    if market_width > available:
+        left = x + 8
+    else:
+        left += max(0, (available - market_width) // 2)
+    _draw_runs(d, left, y, [(text, color, font) for text, color in runs], font)
+
+
+def _draw_header_block(
+    d,
+    b: dict[str, Any],
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+    now: datetime,
+    market: Optional[dict[str, Any]] = None,
+) -> None:
+    title_f = _font(int(b.get("title_font", 13)), bold=True)
+    time_f = _font(int(b.get("time_font", 14)), bold=True)
+    cjk_f = _cjk_font(int(b.get("cjk_font", 9)))
+    if b.get("show_title", True):
+        d.text((x + 10, y + 5), str(b.get("title") or "AI Quotas").upper(), fill=BLACK, font=title_f)
+    if b.get("show_time", True):
+        time_str = now.strftime("%m-%d %H:%M")
+        tw = d.textbbox((0, 0), time_str, font=time_f)[2]
+        d.text((x + w - 10 - tw, y + int(b.get("time_y", 3))), time_str, fill=BLACK, font=time_f)
+        _draw_market_header(
+            d,
+            market,
+            x,
+            y + int(b.get("market_y", 5)),
+            w,
+            x + w - 10 - tw,
+            int(b.get("market_font", 9)),
+        )
+    if b.get("show_calendar", True):
+        calendar_y = b.get("calendar_y")
+        if calendar_y is None:
+            calendar_y = 28 if b.get("show_title", True) else 5
+        d.text((x + 10, y + int(calendar_y)), china_calendar_line(now), fill=BLACK, font=cjk_f)
+    if b.get("border", True):
+        d.line([(x, y + h - 1), (x + w, y + h - 1)], fill=BLACK, width=1)
+
+
+def _draw_quote_block(d, b: dict[str, Any], x: int, y: int, w: int, h: int) -> None:
+    if b.get("border", True):
+        d.line([(x, y), (x + w, y)], fill=BLACK, width=1)
+    quote = random_quote()
+    if not quote.get("q"):
+        return
+    quote_f = _cjk_font(int(b.get("quote_font", 19)))
+    explain_f = _cjk_font(int(b.get("explain_font", 12)), bold=True)
+    max_w = max(8, w - 16)
+    q_lines = _wrap_cjk(d, quote["q"], quote_f, max_w, 1)
+    e_lines = _wrap_cjk(d, quote["e"], explain_f, max_w, 1)
+    q_line_h = max(1, round(quote_f.size * 1.12))
+    e_line_h = max(1, round(explain_f.size * 1.16))
+    block_h = q_line_h * len(q_lines) + 4 + e_line_h * len(e_lines)
+    yy = y + max(7, (h - block_h) // 2)
+    for ln in q_lines:
+        d.text((x + 8, yy), ln, fill=BLACK, font=quote_f)
+        yy += q_line_h
+    yy += 4
+    for ln in e_lines:
+        d.text((x + 8, yy), ln, fill=BLACK, font=explain_f)
+        yy += e_line_h
+
+
+def render_layout(
+    records: Iterable[QuotaRecord],
+    layout: dict[str, Any],
+    now: Optional[datetime] = None,
+    history: Optional[dict[str, dict[str, Any]]] = None,
+    market: Optional[dict[str, Any]] = None,
+) -> Image.Image:
+    """Render from a designer-exported layout JSON (see DEFAULT_LAYOUT schema).
+
+    Each block is drawn inside its own (x, y, w, h) rect, so the web design
+    tool's drag/resize positions map 1:1 onto the panel.
+    """
+    blocks = (layout or {}).get("blocks") or []
+    history = history or {}
+    img = Image.new("RGB", (W, H), WHITE)
+    d = _ScaledDraw(ImageDraw.Draw(img), 1)
+    recs = {r.name: r for r in records}
+    bj = beijing_now(now)
+    for b in blocks:
+        btype = b.get("type")
+        x = int(b.get("x", 0))
+        y = int(b.get("y", 0))
+        w = int(b.get("w", W))
+        h = int(b.get("h", 40))
+        if btype == "header":
+            _draw_header_block(d, b, x, y, w, h, bj, market=market)
+        elif btype == "row":
+            service = str(b.get("service") or "codex")
+            rec = recs.get(service) or QuotaRecord(name=service, status="unavailable", detail="missing")
+            if b.get("border", True):
+                d.line([(x, y), (x + w, y)], fill=BLACK, width=1)
+            _draw_service_row(
+                d,
+                x,
+                y,
+                w,
+                h,
+                rec,
+                now,
+                _row_elements_for_block(b),
+                history=(history or {}).get(service),
+            )
+        elif btype == "quote":
+            _draw_quote_block(d, b, x, y, w, h)
+    return quantize_bwr(img)
+
+
+DEFAULT_LAYOUT: dict[str, Any] = {
+    "version": 1,
+    "canvas": {"w": W, "h": H},
+    "blocks": [
+        {
+            "id": "header",
+            "type": "header",
+            "x": 0,
+            "y": 0,
+            "w": W,
+            "h": 27,
+            "title": "AI Quotas",
+            "title_font": 13,
+            "time_font": 14,
+            "cjk_font": 9,
+            "market_font": 9,
+            "show_title": False,
+            "show_time": True,
+            "show_calendar": True,
+            "calendar_y": 3,
+            "border": True,
+        },
+        {
+            "id": "row-codex",
+            "type": "row",
+            "service": "codex",
+            "x": 0,
+            "y": 27,
+            "w": W,
+            "h": 35,
+            "name_font": 12,
+            "sub_font": 8,
+            "hero_font": 26,
+            "balance_font": 20,
+            "latin_font": 10,
+            "detail_font": 9,
+            "logo_size": 11,
+            "border": True,
+        },
+        {
+            "id": "row-grok",
+            "type": "row",
+            "service": "grok",
+            "x": 0,
+            "y": 62,
+            "w": W,
+            "h": 35,
+            "name_font": 12,
+            "sub_font": 8,
+            "hero_font": 26,
+            "balance_font": 20,
+            "latin_font": 10,
+            "detail_font": 9,
+            "logo_size": 11,
+            "border": True,
+        },
+        {
+            "id": "row-kimi",
+            "type": "row",
+            "service": "kimi",
+            "x": 0,
+            "y": 97,
+            "w": W,
+            "h": 35,
+            "name_font": 12,
+            "sub_font": 8,
+            "hero_font": 26,
+            "balance_font": 20,
+            "latin_font": 10,
+            "detail_font": 9,
+            "logo_size": 11,
+            "border": True,
+        },
+        {
+            "id": "row-opencode-go",
+            "type": "row",
+            "service": "opencode-go",
+            "x": 0,
+            "y": 132,
+            "w": W,
+            "h": 35,
+            "name_font": 12,
+            "sub_font": 8,
+            "hero_font": 26,
+            "balance_font": 20,
+            "latin_font": 10,
+            "detail_font": 9,
+            "logo_size": 11,
+            "border": True,
+        },
+        {
+            "id": "row-ollama-pro",
+            "type": "row",
+            "service": "ollama-pro",
+            "x": 0,
+            "y": 167,
+            "w": W,
+            "h": 35,
+            "name_font": 12,
+            "sub_font": 8,
+            "hero_font": 26,
+            "balance_font": 20,
+            "latin_font": 10,
+            "detail_font": 9,
+            "logo_size": 11,
+            "border": True,
+        },
+        {
+            "id": "row-windsurf",
+            "type": "row",
+            "service": "windsurf",
+            "x": 0,
+            "y": 202,
+            "w": W,
+            "h": 35,
+            "name_font": 12,
+            "sub_font": 8,
+            "hero_font": 26,
+            "balance_font": 20,
+            "latin_font": 10,
+            "detail_font": 9,
+            "logo_size": 11,
+            "border": True,
+        },
+        {
+            "id": "quote",
+            "type": "quote",
+            "x": 0,
+            "y": 242,
+            "w": W,
+            "h": 58,
+            "quote_font": 19,
+            "explain_font": 12,
+            "border": True,
+        },
+    ],
+}
+
+
+def load_layout(path: str | Path | None) -> dict[str, Any] | None:
+    """Load a designer-exported layout JSON (None if absent/invalid)."""
+    if not path:
+        return None
+    p = Path(path)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(data, dict) and isinstance(data.get("blocks"), list):
+        return data
+    return None

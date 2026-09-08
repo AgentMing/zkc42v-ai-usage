@@ -3,7 +3,7 @@
 # 用法:
 #   ./epaper.sh img <png图片>           把图片显示到价签
 #   ./epaper.sh clock                   显示当前时间(黑底白字时钟)
-#   ./epaper.sh quotas                  拉取 codex/grok/kimi/opencode-go 额度并显示
+#   ./epaper.sh quotas                  拉取 codex/grok/kimi/opencode-go/Ollama Pro/Windsurf 额度并显示
 #   ./epaper.sh quotas --no-send        只生成图/frame，不 BLE 推送
 #   ./epaper.sh quotas-loop [seconds] [--start HH:MM --end HH:MM]  周期刷新（默认 900s，可限定活跃时段）
 #   ./epaper.sh time                    同步价签时钟

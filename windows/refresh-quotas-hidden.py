@@ -8,12 +8,35 @@ import shutil
 from pathlib import Path
 
 
+def _is_usable_executable(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _find_powershell() -> Path | None:
+    candidates: list[Path] = []
+    pwsh_found = shutil.which("pwsh.exe")
+    if pwsh_found:
+        candidates.append(Path(pwsh_found))
+    candidates.extend(
+        [
+            Path(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+            Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
+        ]
+    )
+    for candidate in candidates:
+        if _is_usable_executable(candidate):
+            return candidate
+    return None
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     script = root / "windows" / "refresh-quotas.ps1"
-    pwsh_found = shutil.which("pwsh.exe")
-    pwsh = Path(pwsh_found) if pwsh_found else Path(r"C:\Program Files\PowerShell\7\pwsh.exe")
-    if not pwsh.is_file():
+    pwsh = _find_powershell()
+    if pwsh is None:
         return 2
     command = [
         str(pwsh),
@@ -25,6 +48,13 @@ def main() -> int:
         "-File",
         str(script),
     ]
+    for argument in sys.argv[1:]:
+        if argument == "--partial":
+            command.append("-Partial")
+        elif argument == "--partial-red":
+            command.append("-PartialRed")
+        else:
+            raise SystemExit(f"unsupported argument: {argument}")
     startup = subprocess.STARTUPINFO()
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startup.wShowWindow = subprocess.SW_HIDE

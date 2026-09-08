@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,8 @@ from quotas.credentials import (  # noqa: E402
     discover_grok,
     discover_kimi,
     discover_opencode_go,
+    discover_ollama_pro,
+    discover_windsurf,
 )
 
 
@@ -25,8 +28,32 @@ class CredentialDiscoveryTests(unittest.TestCase):
     def test_missing_home_yields_absent_for_all(self):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
-            creds = discover_credentials(home)
-            self.assertEqual(set(creds), {"codex", "grok", "kimi", "opencode-go"})
+            saved = {
+                k: os.environ.pop(k)
+                for k in (
+                    "OLLAMA_API_KEY",
+                    "OLLAMA_PRO_API_KEY",
+                    "WINDSURF_API_KEY",
+                    "DEVIN_WINDSURF_API_KEY",
+                    "DEVIN_API_KEY",
+                    "DEVIN_BEARER_TOKEN",
+                    "DEVIN_AUTHORIZATION",
+                    "DEVIN_ORG",
+                    "DEVIN_ORGANIZATION",
+                    "DEVIN_CREDENTIALS_FILE",
+                    "WINDSURF_CREDENTIALS_FILE",
+                    "WINDSURF_STATE_DB",
+                )
+                if k in os.environ
+            }
+            try:
+                creds = discover_credentials(home)
+            finally:
+                os.environ.update(saved)
+            self.assertEqual(
+                set(creds),
+                {"codex", "grok", "kimi", "opencode-go", "ollama-pro", "windsurf"},
+            )
             for name, c in creds.items():
                 self.assertFalse(c.present, name)
                 self.assertEqual(c.kind, "missing")
@@ -37,6 +64,21 @@ class CredentialDiscoveryTests(unittest.TestCase):
                 blob = json.dumps(red)
                 self.assertNotIn("sk-", blob)
                 self.assertNotIn("eyJ", blob)
+
+    def test_ollama_from_env(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            saved = {k: os.environ.pop(k) for k in ("OLLAMA_API_KEY", "OLLAMA_PRO_API_KEY") if k in os.environ}
+            os.environ["OLLAMA_API_KEY"] = "ollama-test-key"
+            try:
+                c = discover_ollama_pro(home)
+            finally:
+                os.environ.pop("OLLAMA_API_KEY", None)
+                os.environ.update(saved)
+            self.assertTrue(c.present)
+            self.assertEqual(c.kind, "api_key")
+            self.assertEqual(c.api_key, "ollama-test-key")
+            self.assertNotIn("ollama-test-key", json.dumps(c.redacted()))
 
     def test_codex_present_shape(self):
         with tempfile.TemporaryDirectory() as td:
@@ -167,6 +209,98 @@ class CredentialDiscoveryTests(unittest.TestCase):
             self.assertTrue(c.present)
             self.assertEqual(c.api_key, "sk-opencode-test")
             self.assertNotIn("sk-opencode", json.dumps(c.redacted()))
+
+    def test_windsurf_from_state_db(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            path = home / "AppData" / "Roaming" / "Windsurf" / "User" / "globalStorage" / "state.vscdb"
+            path.parent.mkdir(parents=True)
+            db = sqlite3.connect(path)
+            try:
+                db.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)")
+                db.execute(
+                    "INSERT INTO ItemTable(key, value) VALUES (?, ?)",
+                    ("windsurfAuthStatus", json.dumps({"apiKey": "sk-ws-test"})),
+                )
+                db.commit()
+            finally:
+                db.close()
+            c = discover_windsurf(home)
+            self.assertTrue(c.present)
+            self.assertEqual(c.kind, "api_key")
+            self.assertEqual(c.api_key, "sk-ws-test")
+            self.assertEqual(c.extra["variant"], "windsurf")
+            self.assertNotIn("sk-ws-test", json.dumps(c.redacted()))
+
+    def test_devin_from_credentials_toml(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            path = home / "AppData" / "Roaming" / "Devin" / "credentials.toml"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                'windsurf_api_key = "devin-session-token$test"\n'
+                'api_server_url = "https://server.codeium.com"\n',
+                encoding="utf-8",
+            )
+            saved = {
+                k: os.environ.pop(k)
+                for k in (
+                    "WINDSURF_API_KEY",
+                    "DEVIN_WINDSURF_API_KEY",
+                    "DEVIN_API_KEY",
+                    "DEVIN_BEARER_TOKEN",
+                    "DEVIN_AUTHORIZATION",
+                )
+                if k in os.environ
+            }
+            try:
+                c = discover_windsurf(home)
+            finally:
+                os.environ.update(saved)
+            self.assertTrue(c.present)
+            self.assertEqual(c.kind, "api_key")
+            self.assertEqual(c.api_key, "devin-session-token$test")
+            self.assertEqual(c.extra["variant"], "devin")
+            self.assertEqual(c.extra["api_server_url"], "https://server.codeium.com")
+            self.assertNotIn("devin-session-token", json.dumps(c.redacted()))
+
+    def test_devin_api_key_is_marked_unsupported_for_quota(self):
+        with tempfile.TemporaryDirectory() as td:
+            old = os.environ.get("DEVIN_API_KEY")
+            os.environ["DEVIN_API_KEY"] = "apk_user_test"
+            try:
+                c = discover_windsurf(Path(td))
+            finally:
+                if old is None:
+                    os.environ.pop("DEVIN_API_KEY", None)
+                else:
+                    os.environ["DEVIN_API_KEY"] = old
+            self.assertFalse(c.present)
+            self.assertEqual(c.kind, "unsupported")
+            self.assertNotIn("apk_user_test", json.dumps(c.redacted()))
+
+    def test_devin_bearer_from_env(self):
+        with tempfile.TemporaryDirectory() as td:
+            old = {
+                k: os.environ.get(k)
+                for k in ("DEVIN_BEARER_TOKEN", "DEVIN_AUTHORIZATION", "DEVIN_ORG")
+            }
+            os.environ["DEVIN_AUTHORIZATION"] = "Authorization: Bearer auth1-test"
+            os.environ["DEVIN_ORG"] = "org_GQ6LhcfkW1TSinM6"
+            try:
+                c = discover_windsurf(Path(td))
+            finally:
+                for key, value in old.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+            self.assertTrue(c.present)
+            self.assertEqual(c.kind, "bearer")
+            self.assertEqual(c.access_token, "auth1-test")
+            self.assertEqual(c.extra["organization"], "organizations/org_GQ6LhcfkW1TSinM6")
+            self.assertEqual(c.extra["internal_organization_id"], "org_GQ6LhcfkW1TSinM6")
+            self.assertNotIn("auth1-test", json.dumps(c.redacted()))
 
 
 if __name__ == "__main__":
