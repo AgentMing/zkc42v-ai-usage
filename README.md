@@ -5,6 +5,12 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+### 实际屏幕效果
+
+最近一次推送到价签的 Usage Pulse 画面（400×300）：
+
+![Actual Usage Pulse screen](design/usage-pulse-actual.png)
+
 ## 特性
 
 - 🔗 **纯 BLE 直连**：绕过官方云端/App，CoreBluetooth 直接推帧显示。
@@ -119,10 +125,6 @@ python -m quotas --out-dir data/out --layout data/layout.json --send
 
 布局 JSON 与 `tools/quotas/layout.py` 的 `render_layout()` 一一对应，块坐标即面板坐标。
 内置默认排版见 `tools/quotas/layout.py` 的 `DEFAULT_LAYOUT`（与 `quotas` 无参渲染完全一致，单测 `test_render_layout_default_matches_builtin` 保证）。
-
-最近一次实际推送到价签的 Usage Pulse 画面（400×300）：
-
-![Actual Usage Pulse screen](design/usage-pulse-actual.png)
 
 ### AI 额度面板（quotas）
 
