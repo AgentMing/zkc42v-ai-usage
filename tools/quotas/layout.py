@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +33,7 @@ WINDOW_ORDER = ("5h", "week")
 SERVICE_DISPLAY_NAMES = {
     "opencode-go": "opencode",
     "ollama-pro": "ollama pro",
-    "windsurf": "windsurf",
+    "windsurf": "Devin",
 }
 MARKET_ORDER = ("sh", "sz", "spx", "ndx")
 MARKET_LABELS = {"sh": "沪", "sz": "深", "spx": "标普", "ndx": "纳"}
@@ -72,22 +73,34 @@ def format_beijing(dt_or_iso: datetime | str, fmt: str = "%m-%d %H:%M") -> str:
 _FONTS_DIR = Path(__file__).resolve().parents[2] / "fonts"
 _HOS_BOLD = _FONTS_DIR / "HarmonyOS_Sans_SC_Bold.ttf"
 _HOS_REGULAR = _FONTS_DIR / "HarmonyOS_Sans_SC_Regular.ttf"
+_SPLEEN_DIR = Path(__file__).resolve().parents[2] / "fonts"
+
+
+def _spleen_font(size: int) -> ImageFont.ImageFont:
+    """Return a native-size Spleen bitmap font for crisp e-paper glyphs."""
+    path = _SPLEEN_DIR / ("spleen-6x12.bdf" if size <= 14 else "spleen-8x16.bdf" if size <= 18 else "spleen-12x24.bdf")
+    try:
+        return ImageFont.truetype(str(path), size)
+    except OSError:
+        return _font(size)
 
 
 def _font(size: int, *, bold: bool = True) -> ImageFont.ImageFont:
-    """Latin/digit stack following the manufacturer's own choice.
+    """Latin/digit stack aligned with the design page's system font stack.
 
     ZKONG (ZKC42V's maker) officially licenses **Arial** for its ESL panels,
     citing its smooth, even edges as ideal for small screens; SES-imagotag's
     e-ink guide likewise says prefer heavy bold sans-serif at small sizes.
-    So English/digits → Arial (Bold for display & data, Regular fallback).
-    CJK stays on Heiti (STHeiti) via _cjk_font.
+    On Windows use Segoe UI (the page's first available face); on macOS use
+    Arial. CJK uses Microsoft YaHei on Windows and HarmonyOS Sans elsewhere.
     """
     if bold:
         for p in (
             "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
             "/Library/Fonts/Arial Bold.ttf",
             "/System/Library/Fonts/Supplemental/Arial.ttf",
+            r"C:\Windows\Fonts\segoeuib.ttf",
+            r"C:\Windows\Fonts\segoeui.ttf",
         ):
             try:
                 return ImageFont.truetype(p, size)
@@ -112,6 +125,7 @@ def _font(size: int, *, bold: bool = True) -> ImageFont.ImageFont:
             "/Library/Fonts/Arial.ttf",
             "/System/Library/Fonts/Menlo.ttc",
             "/System/Library/Fonts/SFNSMono.ttf",
+            r"C:\Windows\Fonts\segoeui.ttf",
             str(_HOS_REGULAR),
             str(_HOS_BOLD),
             str(_FONTS_DIR / "Roboto.ttf"),
@@ -410,24 +424,24 @@ def _parse_dt(value: Any) -> Optional[datetime]:
 
 
 def _relative_reset(w: dict[str, Any], now: Optional[datetime] = None) -> str:
-    """Relative time until reset, e.g. '剩3天2时' / '剩2时30分' / '已重置'."""
+    """Relative reset time in compact English, e.g. '3d 2h' or '30m'."""
     if w.get("missing") or not w.get("reset_at"):
-        return "—"
+        return "N/A"
     dt = _parse_dt(w["reset_at"])
     if dt is None:
-        return "—"
+        return "N/A"
     bj = beijing_now(now)
     delta = dt.astimezone(BEIJING) - bj
     if delta.total_seconds() <= 0:
-        return "已重置"
+        return "RESET"
     days, secs = delta.days, delta.seconds
     hours = secs // 3600
     mins = (secs % 3600) // 60
     if days > 0:
-        return f"{days}天{hours}时"
+        return f"{days}d {hours}h"
     if hours > 0:
-        return f"{hours}时{mins}分"
-    return f"{mins}分"
+        return f"{hours}h {mins}m"
+    return f"{mins}m"
 
 
 def _draw_runs(
@@ -652,17 +666,15 @@ def draw_logo(d, x: float, y: float, size: float, kind: str, ink, bg) -> None:
 
 
 def _cjk_font(size: int, *, bold: bool = True) -> ImageFont.ImageFont:
-    """CJK text (农历/节气/干支/道德经) — HarmonyOS Sans SC by default.
+    """CJK text (农历/节气/干支/道德经) — mirror the design page fallback.
 
-    Huawei's HarmonyOS Sans has even, generous strokes that survive the 1-bit
-    BWR quantization far better than Microsoft YaHei's thinner glyphs at panel
-    resolution; it also covers Latin, keeping mixed text consistent. Falls back
-    to Heiti (macOS) / SimHei-YaHei (Windows).
+    Windows prefers Microsoft YaHei, matching the design page's CSS fallback;
+    other platforms prefer HarmonyOS Sans SC for legible e-paper strokes.
     """
-    if bold:
-        candidates = [str(_HOS_BOLD), str(_HOS_REGULAR)]
+    if os.name == "nt":
+        candidates = [r"C:\Windows\Fonts\msyhbd.ttc", r"C:\Windows\Fonts\msyh.ttc"] if bold else [r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyhbd.ttc"]
     else:
-        candidates = [str(_HOS_REGULAR), str(_HOS_BOLD)]
+        candidates = [str(_HOS_BOLD), str(_HOS_REGULAR)] if bold else [str(_HOS_REGULAR), str(_HOS_BOLD)]
     candidates += [
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
@@ -710,6 +722,7 @@ def render_quota_image(
     now: Optional[datetime] = None,
     history: Optional[dict[str, dict[str, Any]]] = None,
     market: Optional[dict[str, Any]] = None,
+    stats: Optional[dict[str, Any]] = None,
 ) -> Image.Image:
     """Render a compact, high-contrast BWR quota dashboard.
 
@@ -720,84 +733,70 @@ def render_quota_image(
     """
     recs = list(records)
     history = history or {}
-    # Render at the panel's native resolution. FreeType's hinting can then snap
-    # stems to the actual pixel grid. Supersampling + LANCZOS followed by BWR
-    # thresholding creates broken gray edge fragments on a physical 1-bit
-    # plane, which look much rougher than the source PNG suggests.
-    S = 1
-    img = Image.new("RGB", (W * S, H * S), WHITE)
-    d = _ScaledDraw(ImageDraw.Draw(img), S)
+    return render_usage_pulse(recs, now=now, market=market, stats=stats)
 
+
+def render_usage_pulse(
+    records: Iterable[QuotaRecord], *, now: Optional[datetime] = None,
+    stats: Optional[dict[str, Any]] = None, market: Optional[dict[str, Any]] = None,
+) -> Image.Image:
+    """Single page AI Usage Pulse for the 400×300 panel."""
+    recs = list(records)
+    stats = stats or {}
+    img = Image.new("RGB", (W, H), WHITE)
+    d = _ScaledDraw(ImageDraw.Draw(img), 1)
     bj = beijing_now(now)
-
-# Font sizes are physical display pixels so font hinting matches the panel.
-    header_time_f = _font(14 * S, bold=True)
-    header_cjk_f = _cjk_font(9 * S)
-    quote_f = _cjk_font(19 * S)
-    quote_explain_f = _cjk_font(12 * S, bold=True)
-
-    # --- Header: compact Chinese calendar, market ticker, and clock. ---
-    # The title is redundant on a dedicated quota tag. Keep the calendar and
-    # timestamp on one compact line so the sixth provider still gets a readable
-    # row below it.
-    header_h = 27
-    time_str = bj.strftime("%m-%d %H:%M")
-    tw = d.textbbox((0, 0), time_str, font=header_time_f)[2]
-    d.text((W - 10 - tw, 3), time_str, fill=BLACK, font=header_time_f)
-    _draw_market_header(d, market, 0, 5, W, W - 10 - tw, 9)
-    d.text((10, 3), china_calendar_line(now), fill=BLACK, font=header_cjk_f)
-    d.line([(0, header_h - 1), (W, header_h - 1)], fill=BLACK, width=1)
-
-    # --- Bottom bar: quote + explanation, compact and always on-canvas. ---
-    # quote_f.size includes the supersampling factor; divide by S when
-    # calculating line spacing. The previous code used the scaled size here,
-    # which made long quotes run off the bottom of the panel.
-    quote = random_quote()
-    q_lines: list[str] = []
-    e_lines: list[str] = []
-    q_line_h = max(1, round(quote_f.size / S * 1.12))
-    e_line_h = max(1, round(quote_explain_f.size / S * 1.16))
-    if quote.get("q"):
-        q_lines = _wrap_cjk(d, quote["q"], quote_f, W - 16, 1)
-        e_lines = _wrap_cjk(d, quote["e"], quote_explain_f, W - 16, 1)
-
-    # Shrink the quote panel for short quotes and let the service cards use the
-    # recovered pixels. Long quotes still get enough height for two lines of
-    # text plus a small top/bottom breathing room.
-    quote_content_h = 7 + q_line_h * len(q_lines) + 4 + e_line_h * len(e_lines) + 7
-    # Reserve a compact lower band; full-width service rows use the recovered
-    # height for larger, sturdier glyphs.
-    # Six provider rows need a compact but still legible lower band.
-    quote_h = max(58, quote_content_h)
-    quote_y0 = H - quote_h
-    if q_lines:
-        quote_block_h = q_line_h * len(q_lines) + 4 + e_line_h * len(e_lines)
-        y = quote_y0 + max(7, (quote_h - quote_block_h) // 2)
-        for ln in q_lines:
-            d.text((8, y), ln, fill=BLACK, font=quote_f)
-            y += q_line_h
-        y += 4
-        for ln in e_lines:
-            d.text((8, y), ln, fill=BLACK, font=quote_explain_f)
-            y += e_line_h
-    d.line([(0, quote_y0 - 1), (W, quote_y0 - 1)], fill=BLACK, width=1)
-
-# --- Service area: one full-width row per provider. ---
-    rows = SERVICE_NAMES
-    top = header_h
-    row_h = (quote_y0 - top) // len(rows)
-    records_by_name = {r.name: r for r in recs}
-
-    for ri, name in enumerate(rows):
-        y0 = top + ri * row_h
-        if ri > 0:
-            d.line([(0, y0), (W, y0)], fill=BLACK, width=1)
-        rec = records_by_name.get(name) or QuotaRecord(name=name, status="unavailable", detail="missing")
-        _draw_service_row(d, 0, y0, W, row_h, rec, now, history=history.get(name))
-
-    # Snap FreeType's native-resolution antialiasing to the three panel inks.
+    title_f, small_f = _spleen_font(12), _spleen_font(12)
+    d.text((8, 3), "AI USAGE PULSE", fill=RED, font=title_f)
+    t = bj.strftime("%H:%M")
+    time_f = _spleen_font(16)
+    tw = d.textbbox((0, 0), t, font=time_f)[2]
+    d.text((W - tw - 8, 1), t, fill=BLACK, font=time_f)
+    d.text((8, 18), "QUOTA / USED", fill=RED, font=small_f)
+    d.text((296, 18), "D 1H / RESET", fill=RED, font=small_f)
+    d.line((0, 29, W, 29), fill=RED, width=1)
+    by = {r.name: r for r in recs}
+    rows = (("codex", "CODEX", ("5h", "week")), ("grok", "GROK", ("5h", "week")), ("windsurf", "DEVIN", ("5h", "week")))
+    for i, (key, label, kinds) in enumerate(rows):
+        y = 31 + i * 28
+        rec = by.get(key)
+        d.text((8, y + 4), label, fill=BLACK, font=_spleen_font(12))
+        windows = {str(w.get("kind")): w for w in pick_display_windows(rec)} if rec else {}
+        for j, kind in enumerate(kinds):
+            x = 64 + j * 166
+            w = windows.get(kind, {})
+            used = _win_used_percent(w) if w and not w.get("missing") else None
+            pct = f"{used:.0f}%" if used is not None else "N/A"
+            delta = w.get("delta_used_pp")
+            is_alert = used is not None and used >= 90
+            d.text((x, y + 3), "5H" if kind == "5h" else "WK", fill=BLACK, font=_spleen_font(12))
+            d.text((x + 22, y), pct, fill=RED if is_alert else BLACK, font=_spleen_font(24))
+            if isinstance(delta, (int, float)):
+                d.text((x + 64, y + 4), f"D{delta:+.0f}pp", fill=BLACK, font=small_f)
+            reset = _relative_reset(w, now) if w else "N/A"
+            d.text((x + 103, y + 4), reset, fill=BLACK, font=small_f)
+        d.line((0, y + 27, W, y + 27), fill=BLACK, width=1)
+    d.text((8, 117), "AGENT STATS", fill=RED, font=_spleen_font(12))
+    d.text((W - 104, 117), "24H VS PREV 24H", fill=RED, font=small_f)
+    labels = [("sessions", "SESSIONS"), ("turns", "TURNS"), ("tools", "TOOL CALLS"),
+              ("skill_use", "SKILL USE"), ("tokens", "TOKENS"), ("tools_per_turn", "TOOLS/TURN"),
+              ("msg_p95", "MSG P95"), ("tool_out_p95", "TOOL OUT P95"), ("compacts", "COMPACTS"),
+              ("tool_fail_rate", "TOOL FAIL RATE")]
+    for i, (key, label) in enumerate(labels):
+        col, row = i % 2, i // 2
+        x, y = 8 + col * 198, 132 + row * 27
+        d.text((x, y), label, fill=BLACK, font=small_f)
+        item = stats.get(key, {}) if isinstance(stats.get(key, {}), dict) else {}
+        val = item.get("value", "N/A")
+        delta = item.get("delta")
+        d.text((x, y + 12), str(val), fill=RED if key == "tool_fail_rate" and isinstance(val, str) and val.endswith("%") and float(val[:-1]) >= 5 else BLACK, font=_spleen_font(12))
+        if delta is not None:
+            delta_text = f"D{delta:+}" if isinstance(delta, (int, float)) else f"D{delta}"
+            d.text((x + 76, y + 12), delta_text, fill=BLACK, font=small_f)
+    d.line((0, 270, W, 270), fill=BLACK, width=1)
+    d.text((8, 278), "WSL / DATA OK" if stats.get("_available") else "WSL / STATS N/A", fill=RED, font=small_f)
+    d.text((W - 78, 278), f"SCAN {bj.strftime('%H:%M')}", fill=BLACK, font=small_f)
     return quantize_bwr(img)
-
 
 def image_has_ink(img: Image.Image, *, min_ink_pixels: int = 200) -> bool:
     """True if image is substantially non-blank (not all white/all black)."""
@@ -991,7 +990,7 @@ def _draw_service_row(
     elif rec.name == "ollama-pro":
         subtitle = "PRO · CLOUD"
     elif rec.name == "windsurf":
-        subtitle = "WINDSURF"
+        subtitle = "DEVIN"
     else:
         subtitle = "GO PLAN"
     if sub_el.get("show", True):
@@ -1298,7 +1297,7 @@ DEFAULT_LAYOUT: dict[str, Any] = {
             "x": 0,
             "y": 27,
             "w": W,
-            "h": 35,
+            "h": 51,
             "name_font": 12,
             "sub_font": 8,
             "hero_font": 26,
@@ -1313,60 +1312,9 @@ DEFAULT_LAYOUT: dict[str, Any] = {
             "type": "row",
             "service": "grok",
             "x": 0,
-            "y": 62,
+            "y": 78,
             "w": W,
-            "h": 35,
-            "name_font": 12,
-            "sub_font": 8,
-            "hero_font": 26,
-            "balance_font": 20,
-            "latin_font": 10,
-            "detail_font": 9,
-            "logo_size": 11,
-            "border": True,
-        },
-        {
-            "id": "row-kimi",
-            "type": "row",
-            "service": "kimi",
-            "x": 0,
-            "y": 97,
-            "w": W,
-            "h": 35,
-            "name_font": 12,
-            "sub_font": 8,
-            "hero_font": 26,
-            "balance_font": 20,
-            "latin_font": 10,
-            "detail_font": 9,
-            "logo_size": 11,
-            "border": True,
-        },
-        {
-            "id": "row-opencode-go",
-            "type": "row",
-            "service": "opencode-go",
-            "x": 0,
-            "y": 132,
-            "w": W,
-            "h": 35,
-            "name_font": 12,
-            "sub_font": 8,
-            "hero_font": 26,
-            "balance_font": 20,
-            "latin_font": 10,
-            "detail_font": 9,
-            "logo_size": 11,
-            "border": True,
-        },
-        {
-            "id": "row-ollama-pro",
-            "type": "row",
-            "service": "ollama-pro",
-            "x": 0,
-            "y": 167,
-            "w": W,
-            "h": 35,
+            "h": 51,
             "name_font": 12,
             "sub_font": 8,
             "hero_font": 26,
@@ -1381,9 +1329,9 @@ DEFAULT_LAYOUT: dict[str, Any] = {
             "type": "row",
             "service": "windsurf",
             "x": 0,
-            "y": 202,
+            "y": 129,
             "w": W,
-            "h": 35,
+            "h": 51,
             "name_font": 12,
             "sub_font": 8,
             "hero_font": 26,
@@ -1397,9 +1345,9 @@ DEFAULT_LAYOUT: dict[str, Any] = {
             "id": "quote",
             "type": "quote",
             "x": 0,
-            "y": 242,
+            "y": 180,
             "w": W,
-            "h": 58,
+            "h": 120,
             "quote_font": 19,
             "explain_font": 12,
             "border": True,

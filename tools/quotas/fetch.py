@@ -313,26 +313,10 @@ def _fetch_codex_app_server(timeout: float = 25.0) -> Optional[QuotaRecord]:
     refresh, account selection and backend compatibility.
     """
     if os.name == "nt":
-        # Use native Codex on Windows. The standalone installer provides
-        # codex.exe, while older npm installs provided a codex.cmd shim.
-        # Resolve both forms so scheduled tasks keep working after upgrades.
-        candidates: list[Path] = []
-        configured = os.environ.get("CODEX_CLI_PATH", "").strip().strip('"')
-        if configured:
-            candidates.append(Path(configured))
-        for name in ("codex.exe", "codex"):
-            found = shutil.which(name)
-            if found:
-                candidates.append(Path(found))
-        candidates.append(
-            Path.home() / "AppData" / "Local" / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe"
-        )
-        codex = next((path for path in candidates if path.is_file()), None)
-        if codex is None:
-            return None
-        # WSL may have no route to chatgpt.com even while the Windows host is
-        # online, causing every RPC to time out.
-        cmd = [str(codex), "app-server", "--listen", "stdio://"]
+        # The user's Code agents and their credentials live in WSL. Keep the
+        # quota RPC in that same environment instead of consulting a separate
+        # Windows Codex installation/account.
+        cmd = ["wsl", "-e", "bash", "-lc", "exec codex app-server --listen stdio://"]
     else:
         cmd = ["codex", "app-server", "--listen", "stdio://"]
     try:
@@ -1715,7 +1699,7 @@ def fetch_windsurf(cred: Credential, http: HttpFn = _default_http) -> QuotaRecor
             )
         return unavailable(
             "windsurf",
-            "no WINDSURF_API_KEY or local Windsurf login",
+            "no Devin login found; sign in to Devin Desktop/CLI or configure DEVIN_BEARER_TOKEN + DEVIN_ORG",
         )
 
     if cred.kind == "bearer" or cred.extra.get("quota_source") == "devin-web":

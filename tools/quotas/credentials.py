@@ -528,17 +528,17 @@ def _windsurf_credentials_candidates(home: Path, *, include_native: bool) -> lis
     seen: set[str] = set()
     for root in roots:
         for variant, app_dir in (
+            # Probe lowercase Devin CLI paths first. WSL is case-sensitive,
+            # but this scanner runs on Windows and de-duplicates paths
+            # case-insensitively; putting the uppercase desktop path first
+            # would hide ~/.local/share/devin/credentials.toml.
+            ("devin", "devin"),
+            ("windsurf", "windsurf"),
             ("devin", "Devin"),
             ("devin-next", "Devin - Next"),
             ("windsurf", "Windsurf"),
             ("windsurf-next", "Windsurf - Next"),
         ):
-            path = root / app_dir / "credentials.toml"
-            marker = str(path).lower()
-            if marker not in seen:
-                seen.add(marker)
-                candidates.append((variant, path))
-        for variant, app_dir in (("devin", "devin"), ("windsurf", "windsurf")):
             path = root / app_dir / "credentials.toml"
             marker = str(path).lower()
             if marker not in seen:

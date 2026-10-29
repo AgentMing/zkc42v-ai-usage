@@ -9,7 +9,7 @@
 
 - 🔗 **纯 BLE 直连**：绕过官方云端/App，CoreBluetooth 直接推帧显示。
 - 🖼 **传任意图片** `img`，及 `INIT(model)+SET_SLOT+WRITE_IMG(0x30,RLE)+REFRESH(0x05)` 协议。
-- 📊 **AI 额度面板** `quotas`：codex / grok / kimi / opencode-go / Ollama Pro / Windsurf（Devin）六行实时额度 + 相对重置时间。
+- 📊 **AI 额度面板** `quotas`：Codex、Grok、Devin 三项实时额度 + 相对重置时间。
 - 🎨 **Apple 风格排版**：白底 tile + 单一红色强调；头部大号时间 + 农历/节气/干支；底部随机《道德经》一句 + 白话（本地缓存，无需联网）。
 - 🕘 **差量刷新 + 定时窗口**：数据没变自动跳过推送；`--start/--end` 限定活跃时段省电。
 - 🔬 **逆向工具链**：`scan` / `inspect` / `cmd` / `seq` / `server`（模拟官方 App）。
@@ -94,7 +94,7 @@ pip3 install pillow lunar_python
 ```bash
 ./epaper.sh img clock.png     # 传任意图片
 ./epaper.sh clock             # 显示当前时间(黑底白字)
-./epaper.sh quotas            # 拉取 codex/grok/kimi/opencode-go/Ollama Pro/Windsurf 额度并显示
+./epaper.sh quotas            # 拉取 Codex/Grok/Devin 额度并显示
 ./epaper.sh quotas --no-send  # 只生成 400×300 PNG + frame，不推 BLE
 ./epaper.sh quotas-loop 900   # 每 900 秒刷新额度面板（默认 15 分钟）
 ./epaper.sh quotas-loop 900 --start 09:00 --end 18:00   # 仅早九晚六刷新
@@ -106,7 +106,7 @@ pip3 install pillow lunar_python
 
 `design/index.html` 是一个**本地单文件**拖拽式排版工具（浏览器直接打开即可，无需安装）：
 
-- 400×300 画布，块（标题/时间、六个额度行、道德经）可**拖动移动**、右下角**缩放**、侧栏改**字体字号/颜色开关/边框**、增删块。
+- 400×300 画布，块（标题/时间、三个额度行、道德经）可**拖动移动**、右下角**缩放**、侧栏改**字体字号/颜色开关/边框**、增删块。
 - 用示例额度数据**实时渲染 BWR 预览**，所见即所得（像素严格黑/白/红三色）。
 - 「导出 JSON」把布局存为 `data/layout.json`；「导入 JSON」可回读或粘贴改过的配置。
 - 本地渲染时用 `--layout` 指定布局文件（缺省不传则用内置排版）：
@@ -128,10 +128,7 @@ python -m quotas --out-dir data/out --layout data/layout.json --send
 |------|----------|--------|
 | codex | `~/.codex/auth.json` | `GET chatgpt.com/backend-api/codex/usage` |
 | grok | `~/.grok/auth.json` | `GET cli-chat-proxy.grok.com/v1/billing?format=credits` |
-| kimi | `KIMI_API_KEY` / `KIMI_CODING_API_KEY`，或 `~/.kimi-code/credentials/kimi-code.json`（kimi-code 登录 OAuth） | `GET api.kimi.com/coding/v1/usages`；OAuth 过期走 `auth.kimi.com/api/oauth/token` 刷新 |
-| opencode-go | `~/.local/share/opencode/auth.json`；完整窗口需 `OPENCODE_GO_WORKSPACE_ID` + `OPENCODE_GO_AUTH_COOKIE` | 仪表盘 scrape 或 key 探测 |
-| ollama-pro | `OLLAMA_API_KEY`（也支持 `OLLAMA_PRO_API_KEY`） | `GET ollama.com/api/usage`；session/weekly `usage` 比例转换为剩余百分比 |
-| windsurf / Devin | Windsurf/Devin `state.vscdb`、`credentials.toml`，或 `DEVIN_BEARER_TOKEN` + `DEVIN_ORG` | Codeium SeatManagement 或 `app.devin.ai/.../billing/quota/usage`；日/周订阅额度剩余百分比 |
+| Devin | Devin Desktop/CLI 登录，或 `DEVIN_BEARER_TOKEN` + `DEVIN_ORG` | Devin 网页额度接口；日/周订阅额度剩余百分比 |
 
 单个服务失败只显示 error/unavailable，不会中断其它行。
 
@@ -151,9 +148,8 @@ python -m quotas --out-dir data/out --send --bleprobe bleprobe.py
 
 `/api/usage` 当前返回 session（约 5 小时）和 weekly（7 天）两个使用比例；若接口未返回精确重置时间，面板对应时间位置显示 `—`，不会猜测时间。
 
-Windsurf/Devin 订阅额度默认从桌面端的 `state.vscdb` 或 CLI `credentials.toml` 读取登录凭据，
-也可以设置 `WINDSURF_API_KEY`；Devin 网页额度接口则使用 `DEVIN_BEARER_TOKEN`（或
-`DEVIN_AUTHORIZATION`）配合 `DEVIN_ORG`。接口返回日额度和周额度的剩余百分比，面板分别显示为
+Devin 网页额度接口使用登录态 Bearer token（`DEVIN_BEARER_TOKEN` 或 `DEVIN_AUTHORIZATION`）配合
+`DEVIN_ORG`。接口返回日额度和周额度的剩余百分比，面板分别显示为
 `day` 和 `wk`；本地缓存只在云端查询失败时使用。`DEVIN_API_KEY`（`apk_user_`）是 Devin
 会话 REST key，官方没有把自助订阅 quota 暴露在该 API 上，因此不会误发到额度接口。
 
@@ -163,6 +159,13 @@ Windsurf/Devin 订阅额度默认从桌面端的 `state.vscdb` 或 CLI `credenti
 
 每次成功渲染会保存一份不含密钥的本地历史快照；有上次快照时，额度旁显示剩余百分比的 delta，
 例如 `Δ-2.0` 表示比上次刷新少 2 个百分点，首次刷新没有 delta。
+
+Usage Pulse 的额度变化使用约一小时前、同一额度周期内的采样值；重置时间变化时不跨周期计算。
+Agent Stats 由 Windows 上的 WSL 采集器读取 `~/.codex/sessions`、`~/.grok/sessions/**/updates.jsonl`
+和 `~/.local/share/devin/cli/logs`，汇总当前 24 小时并与此前完整 24 小时比较。采集器只输出统计量，
+不会将提示词、工具参数或日志正文写入历史文件。无时间戳或源日志未记录的字段保持不可用；Devin CLI
+日志本身不提供 token 用量，因此 Tokens 主要来自 Codex 和 Grok 的会话记录；当前 Message/Tool Output P95
+按可解析到正文长度的 Codex 记录估算（约 4 字符折算 1 token），没有对应样本时显示 `—`。
 同时保存当天的刷新采样到 `epaper-quotas-history.json`，每个订阅右侧只显示一条总用量（已用百分比）折线图；
 曲线旁的 plan 数值与 delta 使用更大的字体，顶部另显示沪/深/标普/纳指的当日涨跌；当天第一次刷新只有一个点，跨到新的一天会自动清空旧曲线。
 

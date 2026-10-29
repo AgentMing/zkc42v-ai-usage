@@ -10,7 +10,7 @@ import os
 import shutil
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -21,6 +21,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT / "tools"))
 
 from quotas.credentials import discover_credentials  # noqa: E402
+from quotas.agent_stats import collect_agent_stats  # noqa: E402
 from quotas.fetch import fetch_all_quotas, fetch_market_snapshot  # noqa: E402
 from quotas.layout import (  # noqa: E402
     image_has_ink,
@@ -35,7 +36,7 @@ from quotas.models import SERVICE_NAMES, QuotaRecord  # noqa: E402
 SNAPSHOT_FILENAME = "epaper-quotas-last-records.json"
 HISTORY_FILENAME = "epaper-quotas-history.json"
 MARKET_FILENAME = "epaper-market-last.json"
-HISTORY_MAX_SAMPLES = 288  # enough for five-minute refreshes across one day
+HISTORY_MAX_SAMPLES = 576  # up to 48 hours at five-minute refreshes
 BEIJING = ZoneInfo("Asia/Shanghai")
 
 
@@ -276,18 +277,29 @@ def _new_quota_history(now: datetime | None = None) -> dict[str, Any]:
 
 
 def _load_quota_history(path: Path, now: datetime | None = None) -> dict[str, Any]:
-    """Load today's usage samples; a new Beijing day starts a new series."""
+    """Load up to 48h of samples for hourly deltas and daily trend rendering."""
     empty = _new_quota_history(now)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return empty
-    if not isinstance(data, dict) or data.get("date") != empty["date"]:
+    if not isinstance(data, dict):
         return empty
     samples = data.get("samples")
     if not isinstance(samples, list):
         return empty
-    empty["samples"] = [sample for sample in samples if isinstance(sample, dict)][-HISTORY_MAX_SAMPLES:]
+    floor = _beijing_now(now) - timedelta(hours=48)
+    retained = []
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        try:
+            ts = datetime.fromisoformat(str(sample.get("at")).replace("Z", "+00:00"))
+            if _beijing_now(ts) >= floor:
+                retained.append(sample)
+        except (TypeError, ValueError):
+            continue
+    empty["samples"] = retained[-HISTORY_MAX_SAMPLES:]
     return empty
 
 
@@ -315,10 +327,55 @@ def _total_used_percent(record: QuotaRecord) -> float | None:
     return round(max(0.0, min(100.0, used)), 1)
 
 
-def _usage_values_for_record(record: QuotaRecord) -> dict[str, float]:
+def _usage_values_for_record(record: QuotaRecord) -> dict[str, Any]:
     """Return today's plotted total usage percentage."""
     total = _total_used_percent(record)
-    return {"total": total} if total is not None else {}
+    values: dict[str, Any] = {"total": total} if total is not None else {}
+    for win in pick_display_windows(record):
+        if win.get("missing"):
+            continue
+        kind = str(win.get("kind") or "")
+        used = _finite_float(win.get("used_percent"))
+        if used is None:
+            rem = _remaining_from_mapping(win)
+            used = 100.0 - rem if rem is not None else None
+        if kind and used is not None:
+            values[kind] = {"used": round(used, 2), "reset_at": win.get("reset_at")}
+    return values
+
+
+def _apply_one_hour_window_deltas(records: list[QuotaRecord], history: dict[str, Any], now: datetime | None = None) -> None:
+    current = _beijing_now(now)
+    target = current - timedelta(hours=1)
+    candidates: list[tuple[datetime, dict[str, Any]]] = []
+    for sample in history.get("samples") or []:
+        if not isinstance(sample, dict):
+            continue
+        try:
+            ts = datetime.fromisoformat(str(sample.get("at")).replace("Z", "+00:00"))
+            ts = _beijing_now(ts)
+        except (TypeError, ValueError):
+            continue
+        if target - timedelta(minutes=20) <= ts <= target + timedelta(minutes=10):
+            candidates.append((ts, sample))
+    baseline = min(candidates, key=lambda x: abs((x[0] - target).total_seconds()))[1] if candidates else None
+    old_services = baseline.get("services", {}) if baseline else {}
+    for record in records:
+        old = old_services.get(record.name, {}) if isinstance(old_services, dict) else {}
+        for win in pick_display_windows(record):
+            if win.get("missing"):
+                continue
+            prior = old.get(str(win.get("kind") or ""), {}) if isinstance(old, dict) else {}
+            old_used = _finite_float(prior.get("used")) if isinstance(prior, dict) else None
+            old_reset = prior.get("reset_at") if isinstance(prior, dict) else None
+            if old_used is None or (old_reset and win.get("reset_at") and old_reset != win.get("reset_at")):
+                continue
+            now_used = _finite_float(win.get("used_percent"))
+            if now_used is None:
+                rem = _remaining_from_mapping(win)
+                now_used = 100.0 - rem if rem is not None else None
+            if now_used is not None and now_used >= old_used:
+                win["delta_used_pp"] = round(now_used - old_used, 1)
 
 
 def _append_quota_history(
@@ -326,11 +383,20 @@ def _append_quota_history(
     records: list[QuotaRecord],
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Append one refresh sample and keep only the current day's samples."""
+    """Append one refresh sample and keep 48h for the hourly comparison."""
     current = _beijing_now(now)
     if history.get("date") != current.date().isoformat():
-        history.clear()
-        history.update(_new_quota_history(current))
+        history["date"] = current.date().isoformat()
+    floor = current - timedelta(hours=48)
+    kept = []
+    for old_sample in history.get("samples") or []:
+        try:
+            ts = datetime.fromisoformat(str(old_sample.get("at")).replace("Z", "+00:00"))
+            if _beijing_now(ts) >= floor:
+                kept.append(old_sample)
+        except (AttributeError, TypeError, ValueError):
+            continue
+    history["samples"] = kept
     services: dict[str, dict[str, float]] = {}
     for record in records:
         values = _usage_values_for_record(record)
@@ -350,8 +416,11 @@ def _append_quota_history(
 def _history_series(history: dict[str, Any]) -> dict[str, dict[str, list[float]]]:
     """Flatten stored samples to the per-service series consumed by layout."""
     result: dict[str, dict[str, list[float]]] = {}
+    today = str(history.get("date") or "")
     for sample in history.get("samples") or []:
         if not isinstance(sample, dict):
+            continue
+        if today and not str(sample.get("at") or "").startswith(today):
             continue
         services = sample.get("services")
         if not isinstance(services, dict):
@@ -427,6 +496,9 @@ def run_once(args: argparse.Namespace) -> int:
     sig += "\nmarket=" + json.dumps(market.get("items") or [], sort_keys=True, ensure_ascii=False)
     _apply_deltas(records, previous)
     _append_quota_history(history, records)
+    _apply_one_hour_window_deltas(records, history)
+    agent_stats = collect_agent_stats()
+    sig += "\nagent_stats=" + json.dumps(agent_stats, sort_keys=True, ensure_ascii=False)
     history_series = _history_series(history)
     _print_records(records, as_json=args.json)
 
@@ -468,7 +540,7 @@ def run_once(args: argparse.Namespace) -> int:
     if layout is not None:
         img = render_layout(records, layout, history=history_series, market=market)
     else:
-        img = render_quota_image(records, history=history_series, market=market)
+        img = render_quota_image(records, history=history_series, market=market, stats=agent_stats)
     img.save(png_path)
     print(f"wrote {png_path} {img.size[0]}x{img.size[1]} ink={image_has_ink(img)}")
     _build_frame(png_path, frame_path)

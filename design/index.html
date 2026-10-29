@@ -273,8 +273,8 @@ const SCALE = 2;
 const BLACK = [0, 0, 0], WHITE = [255, 255, 255], RED = [255, 0, 0];
 
 // ---- 与 tools/quotas/models.py SERVICE_NAMES 对齐 ----
-const SERVICES = ["codex", "grok", "kimi", "opencode-go", "ollama-pro", "windsurf"];
-const SERVICE_LABEL = { codex: "codex", grok: "grok", kimi: "kimi", "opencode-go": "opencode", "ollama-pro": "ollama pro", windsurf: "windsurf" };
+const SERVICES = ["codex", "grok", "windsurf"];
+const SERVICE_LABEL = { codex: "codex", grok: "grok", windsurf: "Devin" };
 
 // ---- 预览用示例额度数据（对应 tests/test_quotas_layout.py sample_records）----
 const SAMPLE_RECORDS = [
@@ -377,7 +377,7 @@ function elColor(cfg, alert) {
 // ---- 默认布局（对应 layout.py DEFAULT_LAYOUT）----
 function rowBlock(id, service, y) {
   return {
-    id, type: "row", service, x: 0, y, w: W, h: 35, border: true,
+    id, type: "row", service, x: 0, y, w: W, h: 51, border: true,
     elements: JSON.parse(JSON.stringify(ROW_ELEMENT_DEFAULTS)),
   };
 }
@@ -388,12 +388,9 @@ function defaultLayout() {
     blocks: [
       { id: "header", type: "header", x: 0, y: 0, w: W, h: 27, title: "AI Quotas", title_font: 13, time_font: 14, cjk_font: 9, market_font: 9, show_title: false, show_time: true, show_calendar: true, calendar_y: 3, border: true },
       rowBlock("row-codex", "codex", 27),
-      rowBlock("row-grok", "grok", 62),
-      rowBlock("row-kimi", "kimi", 97),
-      rowBlock("row-opencode-go", "opencode-go", 132),
-      rowBlock("row-ollama-pro", "ollama-pro", 167),
-      rowBlock("row-windsurf", "windsurf", 202),
-      { id: "quote", type: "quote", x: 0, y: 242, w: W, h: 58, quote_font: 19, explain_font: 12, border: true },
+      rowBlock("row-grok", "grok", 78),
+      rowBlock("row-windsurf", "windsurf", 129),
+      { id: "quote", type: "quote", x: 0, y: 180, w: W, h: 120, quote_font: 19, explain_font: 12, border: true },
     ],
   };
 }
@@ -755,7 +752,7 @@ function drawRow(ctx, b, rec, nowMs, history) {
   else if (recObj.name === "grok") sub = /weekly/.test(detail) ? "WEEKLY" : "GROK BUILD";
   else if (recObj.name === "kimi") sub = "CODING PLAN";
   else if (recObj.name === "ollama-pro") sub = "PRO · CLOUD";
-  else if (recObj.name === "windsurf") sub = "WINDSURF";
+  else if (recObj.name === "windsurf") sub = "DEVIN";
   else sub = "GO PLAN";
   if (el.subtitle.show) {
     setFont(ctx, el.subtitle.font, true, false);

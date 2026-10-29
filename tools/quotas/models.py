@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
-SERVICE_NAMES = ("codex", "grok", "kimi", "opencode-go", "ollama-pro", "windsurf")
+SERVICE_NAMES = ("codex", "grok", "windsurf")
 
 
 @dataclass
