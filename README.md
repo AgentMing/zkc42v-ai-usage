@@ -120,6 +120,10 @@ python -m quotas --out-dir data/out --layout data/layout.json --send
 布局 JSON 与 `tools/quotas/layout.py` 的 `render_layout()` 一一对应，块坐标即面板坐标。
 内置默认排版见 `tools/quotas/layout.py` 的 `DEFAULT_LAYOUT`（与 `quotas` 无参渲染完全一致，单测 `test_render_layout_default_matches_builtin` 保证）。
 
+最近一次实际推送到价签的 Usage Pulse 画面（400×300）：
+
+![Actual Usage Pulse screen](design/usage-pulse-actual.png)
+
 ### AI 额度面板（quotas）
 
 从本机已登录凭据读取额度（**不**在源码里写密钥）：
